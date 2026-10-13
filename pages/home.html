@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>首页 · 记账 Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="scroll" id="scroll"></div>
+  <nav class="nav" aria-label="底部导航"></nav>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var S = Store.state();
+  var h = Calc.homeView(S);
+  var env = h.env, cycle = h.cycle, meal = h.meal, plan = h.plan;
+
+  document.querySelector('.nav').outerHTML = UI.nav('home');
+  var root = document.getElementById('scroll');
+
+  /* --- 预警块：只用文字和颜色，不弹窗（规格第 10 节） --- */
+  var alertRows = h.alerts.map(function (a) {
+    return '<div class="alert-row' + (a.level === 'info' ? ' alert-row--info' : '') + '">' +
+      '<span class="alert-row__dot"></span><span>' + UI.esc(a.text) + '</span></div>';
+  });
+
+  /* 第 7 条：超过 7 天没导出，首页预警块提示，点它直接导出 */
+  var bk = Store.backupReminder();
+  var backupRow = bk.need
+    ? '<button type="button" class="alert-row alert-row--tappable" id="doBackup">' +
+        '<span class="alert-row__dot"></span><span>' +
+        (bk.days === null ? '还没有导出过备份，点这里导一份' : '该备份了：' + UI.esc(bk.text) + '，点这里导出') +
+      '</span></button>'
+    : '';
+  if (backupRow) alertRows.push(backupRow);
+
+  var alertsHtml = alertRows.length
+    ? alertRows.join('')
+  : '<div class="alert-row alert-row--info"><span class="alert-row__dot"></span><span>各项都在线内</span></div>';
+
+  /* --- 大目标细进度条：没有进行中的目标时不显示 --- */
+  var goalHtml = h.goal
+    ? '<a class="card card--tight" href="' + UI.url('goals.html') + '" style="text-decoration:none;color:inherit">' +
+      '<div class="row-between" style="font-size:13px"><b>' + UI.esc(h.goal.name) + '</b>' +
+      '<span class="muted">' + UI.num(h.goal.saved) + ' / ' + UI.num(h.goal.target) + '</span></div>' +
+      '<div class="progress progress--purple progress--thin"><i style="width:' + h.goal.pct + '%"></i></div>' +
+      '</a>'
+    : '';
+
+  /* --- 本周日历（第 11 节：没排班显示「未排」，中性色） --- */
+  var week = Calc.weekStrip(S, h.teachingWeek.monday);
+  var STATUS_CN = { work: '班', rest: '休', night: '晚', travel: '出行', unset: '未排' };
+  var weekHtml = week.map(function (d) {
+    return '<div class="day ' + UI.statusClass(d.status) + (d.isToday ? ' is-today' : '') + '">' +
+      (d.status === 'night' ? '<span class="night-badge">晚</span>' : '') +
+      '<div class="day__w">' + d.day + '</div>' +
+    '<div class="day__n">' + d.label + '</div>' +
+      '<div class="day__s day__s--' + (d.status === 'night' ? 'night' : d.status) + '">' + (STATUS_CN[d.status] || '') + '</div>' +
+      '</div>';
+  }).join('');
+
+  var agenda = h.nextEvent
+    ? '<span style="font-weight:500">' + UI.esc(h.nextEvent.title) +
+      (h.nextEvent.time ? ' · ' + UI.esc(h.nextEvent.time) : '') + '</span>'
+    : '<span class="muted">没有安排</span>';
+
+  /* 没排班显示「未排」，不显示成「休」（第 11 节） */
+  var SHIFT_CN = { night: '晚班', work: '班', travel: '出行', rest: '休', unset: '未排' };
+  var shiftText = SHIFT_CN[h.shiftText] || '未排';
+
+  root.innerHTML =
+    /* 顶部：日期和星期同行，周期胶囊单独一行，不被截断 */
+    '<div class="topbar topbar--stack">' +
+      '<h1>' + h.dateText + '<span class="sub">' + h.weekdayText + ' · ' + shiftText + '</span></h1>' +
+      '<div class="pill pill--row">' + UI.esc(h.paydayPill) + '</div>' +
+    '</div>' +
+
+    '<section class="card">' +
+      '<div>' +
+        '<div class="card-label">' + UI.esc(meal.label) + '</div>' +
+        '<div class="card-value">' + UI.money(meal.main) + '</div>' +
+/* 吃饭那行小字太长会折行（第 4 条），拆成两行各自一行显示 */
+        '<div class="card-sub">本周期剩 ' + UI.money(meal.rest) + ' · ' + meal.daysTo + '</div>' +
+        '<div class="card-sub card-sub--tight">外卖剩 ' + env.takeout.leftCount + ' 次</div>' +
+      '</div>' +
+      '<div class="grid3">' +
+        UI.tile('打车', env.taxi.leftCount + ' 次', '剩') +
+        UI.tile('机动·其他', UI.money(env.other.left), '剩') +
+        UI.tile('安全可花', UI.money(plan.safeSpend), '') +
+      '</div>' +
+    '</section>' +
+
+    '<section class="alert-box">' +
+      '<div class="alert-box__title">预警</div>' + alertsHtml +
+    '</section>' +
+
+    goalHtml +
+
+    '<section class="card">' +
+      '<div class="row-between" style="align-items:baseline">' +
+        '<div style="font-size:15px;font-weight:700">第 ' + h.teachingWeek.week + ' 周' +
+          '<span class="section-note" style="margin-left:6px">教学周</span></div>' +
+        '<a href="' + UI.url('calendar.html') + '" style="font-size:13px">' +
+          Calc.mdLabel(h.teachingWeek.monday) + '–' + (+h.teachingWeek.sunday.slice(8, 10)) + '日 ›</a>' +
+      '</div>' +
+      '<div class="week-strip">' + weekHtml + '</div>' +
+      '<div class="row-between" style="background:var(--bg);border-radius:12px;padding:9px 12px;font-size:13px">' +
+        '<span class="muted">下一个事项</span>' + agenda +
+      '</div>' +
+    '</section>' +
+
+    '<div class="spacer"></div>' +
+
+    '<a class="btn btn--lg btn--block" href="' + UI.url('add.html') + '">' +
+      UI.icon('plus', 20, '#fff') + '记一笔</a>';
+
+  /* 第 7 条：点预警块里的备份提醒直接导出 */
+  UI.on(root, '#doBackup', 'click', function () {
+    UI.download(UI.exportFilename(Store.state()), Store.exportJSON());
+    Store.markExported();
+    location.reload();
+  });
+})();
+</script>
+</body>
+</html>
