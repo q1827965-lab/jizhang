@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>发薪日流程</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone phone--tall">
+  <div class="scroll scroll--tight" id="scroll"></div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var S = Store.state();
+  var cycle = Calc.deriveCycle(S);
+  var input = {
+    salary: null,
+    abcActual: null,           // 第 12 节：默认留空，用户照真实账户填
+    cangzheActual: null,
+    paydayDate: S.today
+  };
+  /* 演示用：?fill=1 时预填实发工资和两个余额（真实使用时输入框默认留空）。
+     余额从当前状态读，不写死任何数字。 */
+  (function () {
+    var fill = UI.qs('fill');
+    if (!fill) return;
+    input.salary = (fill === 'short') ? 1000 : 9000;
+    input.abcActual = S.accounts.abc;
+    input.cangzheActual = S.accounts.cangzhe;
+  })();
+
+  var done = {};
+  var root = document.getElementById('scroll');
+
+  function render() {
+    S = Store.state();
+    var plan = Calc.paydayPlan(S, input);
+    var review = Calc.buildReview(S, cycle.key);
+    var allDone = plan.steps.every(function (s) { return done[s.id]; });
+
+var stepsHtml = plan.steps.map(function (s) {
+   var checked = !!done[s.id];
+      /* 第 12 节：只有应急金和目标的欠额会顺延；定期是「剩下的全部」，没有欠额 */
+      var lack = s.shortfall > 0
+        ? '<span class="tag tag--warn">差额 ' + UI.num(s.shortfall) + ' 顺延</span>' : '';
+      if (s.id === 'icbc-abc' && s.amount === 0 && plan.abcShortfall > 0) {
+        lack = '<span class="tag tag--warn">拨不满，差 ' + UI.num(plan.abcShortfall) + '（不顺延）</span>';
+      }
+      return '<div class="row-between" style="align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line-soft)">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:15px;font-weight:' + (checked ? '400' : '700') + ';' + (checked ? 'color:var(--ink-3);text-decoration:line-through' : '') + '">' +
+            UI.esc(s.title) + '</div>' +
+          '<div class="hint">' + UI.esc(s.detail) + '</div>' +
+          '<div class="inline" style="margin-top:5px">' +
+            '<span class="tag">' + UI.esc(s.direction) + '</span>' +
+            '<span style="font-size:15px;font-weight:700">' + UI.money(s.amount) + '</span>' + lack +
+          '</div>' +
+        '</div>' +
+        '<button type="button" class="switch" role="switch" data-step="' + s.id + '" aria-checked="' + (checked ? 'true' : 'false') + '"><span></span></button>' +
+        '</div>';
+    }).join('');
+
+var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
+    var recon = plan.reconcileTotal || {};
+    var reconBad = recon.ready && !recon.balanced;
+    var envRows = review.envelopes.map(function (r) {
+      var over = r.used > r.quota;
+      return '<div class="mini-list__row"><span>' + r.name + (over ? ' <span class="tag tag--warn">超支</span>' : '') + '</span>' +
+        '<span>' + UI.num(r.used) + ' / ' + UI.num(r.quota) + '</span></div>';
+    }).join('');
+
+    root.innerHTML =
+      '<div class="topbar topbar--center">' +
+        '<a class="icon-btn" href="' + UI.url('more.html') + '" aria-label="返回">' + UI.icon('left', 18) + '</a>' +
+        '<h2>发薪日 · ' + cycle.label + '收尾</h2>' +
+   '<span style="width:40px"></span>' +
+      '</div>' +
+
+'<section class="card">' +
+        '<div class="section-title">1 · 填工资和两个账户的实际余额</div>' +
+    '<div class="grid2">' +
+          '<div class="field"><label for="salary">实发工资<span style="color:var(--red,#DC2626)"> *</span></label>' +
+          '<input id="salary" class="input input--num" inputmode="decimal" value="' + (input.salary != null ? input.salary : '') + '" placeholder="必填"></div>' +
+     '<div class="field"><label for="abc">农行实际余额</label>' +
+/* 第 12 节：placeholder 用灰色提示显示 App 算出的应有余额。
+               「App 算出 ¥3,440.00」在 390 宽下会被截断，缩短成「应有 3,440.00」 */
+            '<input id="abc" class="input input--num" inputmode="decimal" value="' +
+          (input.abcActual != null ? input.abcActual : '') + '" placeholder="应有 ' + UI.num(recon.expectedAbc) + '"></div>' +
+        '</div>' +
+        '<div class="field"><label for="cang">攒着实际余额</label>' +
+       '<input id="cang" class="input input--num" inputmode="decimal" value="' +
+      (input.cangzheActual != null ? input.cangzheActual : '') + '" placeholder="应有 ' + UI.num(recon.expectedCangzhe) + '"></div>' +
+        (salaryMissing
+          ? '<div class="callout callout--warn"><span class="t">实发工资必填</span><span>没填实发工资不显示转账清单。</span></div>'
+   : '') +
+    '<div class="' + (reconBad ? 'callout callout--warn' : 'callout') + '">' +
+          (reconBad
+            ? '<span class="t">对不上：' + UI.money(recon.diff) + '</span>' +
+              '<span>记账算出「农行 + 攒着」应有 ' + UI.money(recon.expectedTotal) +
+     '，实际 ' + UI.money(recon.actualTotal) + '</span>' +
+              '<span>把差额补记到具体信封，账就对了。</span>' +
+      '<button type="button" class="btn btn--sm btn--outline" id="fixAbc" style="margin-top:6px">把差额补记到吃饭信封</button>'
+            : (recon.ready
+              ? '<span>对账一致：「农行 + 攒着」合计都是 ' + UI.money(recon.actualTotal) + '</span>'
+              : '<span>对账比较的是「农行 + 攒着」的合计。记账算出农行应有 ' + UI.money(recon.expectedAbc) +
+                '、攒着应有 ' + UI.money(recon.expectedCangzhe) + '，合计 ' + UI.money(recon.expectedTotal) +
+        '。请照真实账户填上面两个框。</span>')) +
+ '</div>' +
+      '</section>' +
+
+      '<section class="card">' +
+    '<div class="section-title">2 · 上一周期复盘（' + review.cycleLabel + '）</div>' +
+        '<div class="mini-list">' + envRows + '</div>' +
+     '<div class="hint">打车 ' + review.taxiCount + ' 次 · 外卖 ' + review.takeoutCount + ' 次 · 合计支出 ' + UI.money(review.totalSpent) + '</div>' +
+   '<div class="hint">本周期买了：' + (review.bought.join('、') || '无（只有实际买掉的才算）') + '</div>' +
+      '<div class="hint">推迟了：' + (review.deferred.join('、') || '无') + '</div>' +
+        (review.advice.length
+          ? '<div class="callout callout--warn"><span class="t">复盘建议</span>' +
+            review.advice.map(function (a) { return '<span>· ' + UI.esc(a) + '</span>'; }).join('') + '</div>'
+ : '') +
+ '</section>' +
+
+/* 第 12 节：没填实发工资不显示转账清单。
+       但第 3 步的位置保留、标题写明「填完实发工资后显示」，
+       这样后面 4 / 5 的编号不会跳号。 */
+    (salaryMissing
+      ? '<section class="card">' +
+        '<div class="section-title">3 · 转账清单</div>' +
+        '<div class="hint">填完实发工资后显示转账清单。</div>' +
+      '</section>'
+      : '<section class="card">' +
+        '<div class="section-title">3 · 转账清单（按顺序勾）</div>' +
+        '<div>' + stepsHtml + '</div>' +
+        /* 第 12 节：应急金和目标的欠额也在黄色提示块里写出来，
+           不要只写在清单底部一行 */
+    (function () {
+      var lines = [];
+      if (plan.abcShortfall > 0) {
+        lines.push('<span>本周期信封拨不满，差 ' + UI.money(plan.abcShortfall) +
+          '。农行只能拨 ' + UI.money(plan.steps[1].amount) + '，差额不顺延，下个发薪日重新算。</span>');
+      }
+      var emLack = plan.steps[2].shortfall, goalLack = plan.steps[3].shortfall;
+      var parts = [];
+      if (emLack > 0) parts.push('应急金欠 ' + UI.money(emLack));
+      if (goalLack > 0) parts.push('目标账户欠 ' + UI.money(goalLack));
+      if (parts.length) {
+        lines.push('<span>' + parts.join('、') + '，顺延到下个发薪日。</span>');
+      }
+      return lines.length
+        ? '<div class="callout callout--warn"><span class="t">工资不够分</span>' + lines.join('') + '</div>'
+        : '';
+    })() +
+        '<div class="hint">共转出 ' + UI.money(plan.totalOut) +
+          (plan.carriedOver > 0 ? ' · 应急金和目标欠额顺延 ' + UI.money(plan.carriedOver) : '') + '</div>' +
+      '</section>') +
+
+      '<section class="card">' +
+        '<div class="section-title">4 · 完成新周期</div>' +
+      '<div class="hint">全部勾完会：生成定期存单、记下本次发薪日期、各信封额度重置、开始新周期。</div>' +
+        '<button type="button" class="btn btn--lg btn--block" id="finish"' +
+    ((allDone && !salaryMissing) ? '' : ' disabled') + '>' +
+ (salaryMissing ? '先填实发工资'
+          : (allDone ? '完成，开始新周期' : '还有 ' + plan.steps.filter(function (s) { return !done[s.id]; }).length + ' 笔没勾')) + '</button>' +
+      '</section>' +
+
+      '<section class="card">' +
+        '<div class="section-title">5 · 导出给随记</div>' +
+        '<div class="hint">新周期开始后导出一份 JSON，复盘在电脑上的随记里做。</div>' +
+ '<button type="button" class="btn btn--outline btn--block" id="export"' + (allDone ? '' : ' disabled') + '>下载 JSON</button>' +
+ '</section>';
+
+/* 交互 */
+    UI.on(root, '#salary', 'input', function (el) { input.salary = el.value === '' ? null : Number(el.value); });
+    UI.on(root, '#abc', 'input', function (el) { input.abcActual = el.value === '' ? null : Number(el.value); });
+    UI.on(root, '#cang', 'input', function (el) { input.cangzheActual = el.value === '' ? null : Number(el.value); });
+  /* 失焦或回车才重渲染，避免每敲一个数字就丢焦点 */
+    UI.on(root, '#salary', 'change', function () { render(); });
+    UI.on(root, '#abc', 'change', function () { render(); });
+    UI.on(root, '#cang', 'change', function () { render(); });
+    UI.on(root, '#fixAbc', 'click', function () {
+  var diff = recon.diff;
+      if (!diff || Math.abs(diff) < 0.005) return;
+      Store.addEntry({ amount: Math.abs(diff), catId: 'c-food-main', envelope: 'food', date: S.today, note: '对账差额补记' });
+      // 差额补到吃饭（农行），所以农行实际余额朝差额方向挪
+    input.abcActual = Calc.round2(Calc.nz(input.abcActual, 0) - diff);
+      render();
+      UI.toast('已补记，账对上了');
+    });
+    UI.on(root, '[data-step]', 'click', function (el) {
+      var id = el.getAttribute('data-step');
+      done[id] = !done[id];
+      render();
+    });
+    UI.on(root, '#finish', 'click', function () {
+      if (!confirm('完成发薪日流程？各信封额度会重置，开始新周期。')) return;
+      var plan2 = Calc.paydayPlan(Store.state(), input);
+      Store.write(Calc.applyPayday(Store.state(), plan2, { paydayDate: input.paydayDate }));
+      render();
+      UI.toast('新周期开始完了，记得导出给随记');
+    });
+    UI.on(root, '#export', 'click', function () {
+      var S2 = Store.state();
+      UI.download(UI.exportFilename(S2), Store.exportJSON());
+      Store.markExported();
+      UI.toast('已下载');
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
