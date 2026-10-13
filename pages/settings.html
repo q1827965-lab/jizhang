@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>设置</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone phone--tall">
+  <div class="scroll scroll--tight" id="scroll"></div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var root = document.getElementById('scroll');
+
+  /* 每个设置项：path 指向 settings 里的字段 */
+  var FIELDS = [
+    { g: '信封额度（每周期）', items: [
+      { p: ['envelopes', 'food'], l: '吃饭' },
+      { p: ['envelopes', 'sub'], l: '固定订阅' },
+      { p: ['envelopes', 'mobility'], l: '机动' },
+      { p: ['envelopes', 'mobilityOther'], l: '其中 机动·其他' },
+      { p: ['envelopes', 'free'], l: '自由支配' }
+    ] },
+    { g: '打车与外卖', items: [
+      { p: ['taxi', 'price'], l: '打车单价' },
+      { p: ['taxi', 'surplus'], l: '打车余量次数' },
+      { p: ['taxi', 'unassignedWeekNightShifts'], l: '未排班的周按几个晚班' },
+      { p: ['takeout', 'perCycle'], l: '外卖每周期次数' }
+    ] },
+    { g: '提醒线', items: [
+      { p: ['warn', 'mealDaily'], l: '吃饭每日提醒线' },
+      { p: ['warn', 'mobilityOther'], l: '机动·其他预警（%）', join: true }
+    ] },
+    { g: '规划', items: [
+      { p: ['plan', 'floor'], l: '底线' },
+      { p: ['plan', 'abcBuffer'], l: '农行缓冲' },
+      { p: ['plan', 'worstPaydayFallback'], l: '最坏发薪日（记录不满 3 次时）' },
+      { p: ['plan', 'coldThreshold'], l: '冷处理门槛' },
+      { p: ['plan', 'coldDays'], l: '冷处理天数' }
+    ] },
+    { g: '应急金', items: [
+      { p: ['emergency', 'target'], l: '目标' },
+      { p: ['emergency', 'perCycle'], l: '每周期拨款' }
+    ] },
+    { g: '复盘建议', items: [
+      { p: ['review', 'overspendCycles'], l: '连续几个周期' },
+      { p: ['review', 'bigSurplusPct'], l: '大幅结余线（%）' }
+    ] },
+    { g: '日历', items: [
+      { p: ['calendar', 'teachingWeek'], l: '当前是第几教学周', sub: '每周一自动加 1' }
+    ] }
+  ];
+
+  function get(obj, p) {
+    var cur = obj;
+    for (var i = 0; i < p.length; i++) cur = cur[p[i]];
+    return cur;
+  }
+  function set(obj, p, v) {
+    var cur = obj;
+    for (var i = 0; i < p.length - 1; i++) cur = cur[p[i]];
+    cur[p[p.length - 1]] = v;
+  }
+
+  function render() {
+    var S = Store.state();
+    var st = S.settings;
+
+    var groups = FIELDS.map(function (G) {
+      return '<section class="group"><h2>' + G.g + '</h2><div class="card">' +
+        G.items.map(function (it, i) {
+          var v = get(st, it.p);
+var shown = it.join ? v.join(', ') : v;
+          return '<div class="row-between" style="gap:12px"' + (i < G.items.length - 1 ? ';border-bottom:1px solid var(--line-soft)' : '') + '>' +
+'<label for="f' + it.p.join('_') + '" style="min-width:0;flex:1">' + it.l +
+        (it.sub ? '<span class="hint" style="display:block">' + it.sub + '</span>' : '') + '</label>' +
+     '<input id="f' + it.p.join('_') + '" class="input input--right" style="flex:0 0 110px" data-p="' + it.p.join(',') + '"' +
+            (it.join ? '' : ' inputmode="decimal"') + ' value="' + UI.esc(shown) + '"></div>';
+        }).join('') +
+        '</div></section>';
+    }).join('');
+
+    var catCount = S.categories.reduce(function (n, c) { return n + c.children.length; }, 0);
+
+    var ba = Calc.bufferAdvice(S);
+
+    root.innerHTML =
+      '<div class="topbar topbar--center">' +
+        '<a class="icon-btn" href="' + UI.url('more.html') + '" aria-label="返回">' + UI.icon('left', 18) + '</a>' +
+        '<h1>设置</h1><span style="width:40px"></span>' +
+      '</div>' +
+
+      groups +
+
+      '<div class="card card--tight">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span class="card-label">分类与默认信封</span>' +
+          '<span class="hint">' + S.categories.length + ' 个一级 · ' + catCount + ' 个二级</span>' +
+        '</div>' +
+        S.categories.map(function (g) {
+          return '<div class="hint">' + UI.esc(g.name) + '：' +
+            g.children.map(function (c) {
+              var def = c.defaultEnvelope ? c.defaultEnvelope : (c.counted === 'takeout' ? '吃饭' : '机动·打车');
+              return UI.esc(c.name) + '→' + ENV_CN(def);
+            }).join('、') + '</div>';
+        }).join('') +
+      '</div>' +
+
+      '<div class="card card--tight">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span class="card-label">缓冲额检查</span>' +
+          '<span class="hint">' + (ba.shouldWarn ? '<b style="color:var(--orange)">建议调整</b>' : '当前够用') + '</span>' +
+        '</div>' +
+        '<div class="hint">' + UI.esc(ba.text || ('发薪可能晚 ' + ba.gapDays + ' 天，那几天要花 ' + UI.money(ba.suggested) + '，缓冲 ' + UI.money(ba.bufferTarget) + ' 够用')) + '</div>' +
+        '<div class="hint">规则：（最坏 − 预计）×（吃饭 + 打车）每天开销 &gt; 350 时提醒改缓冲额，不自动改。</div>' +
+      '</div>' +
+
+      '<div class="hint" style="text-align:center">改完任意一项，下面「保存设置」后所有页面自动重算。</div>' +
+      '<button type="button" class="btn btn--lg btn--block" id="save">保存设置</button>' +
+
+      '<div class="divider"></div>' +
+
+'<section class="card card--tight">' +
+        '<div class="section-title" style="color:var(--red)">清空全部账目</div>' +
+        '<div class="hint" style="color:#B91C1C">会删掉这台手机上的<b>全部真实账目</b>：所有流水、排表里的东西、账户余额、定期存单、大目标、日历排班。<br><br>' +
+    '删掉就找不回来了。<b>强烈建议先回「更多」页导出一份 JSON 备份</b>，导错了至少能导回来。<br><br>' +
+          '分类表和设置项默认值会保留 —— 这两样是 App 运行必须的，不算账目。</div>' +
+        '<button type="button" class="btn btn--danger btn--block" id="reset">清空全部账目</button>' +
+      '</section>';
+
+    UI.on(root, '#save', 'click', function () {
+      var next = JSON.parse(JSON.stringify(st));
+      UI.$$('[data-p]', root).forEach(function (el) {
+        var p = el.getAttribute('data-p').split(',');
+        var raw = el.value;
+        if (p.join('.') === 'warn.mobilityOther') {
+          set(next, p, raw.split(/[,，\s]+/).filter(Boolean).map(Number));
+        } else {
+          set(next, p, raw === '' ? 0 : Number(raw));
+        }
+      });
+      Store.saveSettings(next);
+      UI.toast('已保存，首页和排表会跟着变');
+      render();
+    });
+
+UI.on(root, '#reset', 'click', function () {
+      var S = Store.state();
+      if (!confirm(
+        '这会删掉：\n' +
+        '· 所有流水（' + (S.entries || []).length + ' 笔）\n' +
+        '· 排表里的东西（' + (S.planItems || []).length + ' 项）\n' +
+   '· 所有账户余额、定期存单、大目标、日历排班\n\n' +
+        '删掉就找不回来了。\n\n' +
+    '强烈建议先回「更多」页导出一份 JSON 备份。\n\n' +
+        '确定要继续吗？')) return;
+      /* 第 9 条：必须输入「清空」两个字才执行 */
+      var word = prompt('请输入「清空」两个字，确认执行：', '');
+      if (word === null) return;
+      if (String(word).trim() !== '清空') {
+   alert('输入的不是「清空」，没有执行任何操作。');
+        return;
+      }
+      if (!confirm('最后确认一次：真的要把全部账目清空吗？')) return;
+      /* 清空前自动存一份备份，误点了还能从「更多 → 查看自动备份」找回 */
+      try { Store.importJSON(Store.exportJSON()); } catch (e) { /* noop */ }
+      Store.reset();
+      UI.toast('已清空全部账目。误删了可在「更多」页的「查看自动备份」里找回');
+      render();
+    });
+  }
+
+  function ENV_CN(k) {
+    return { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' }[k] || k;
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
