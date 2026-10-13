@@ -459,6 +459,29 @@ var UI = (function () {
     return t.length ? '提醒：' + t.join('、') : '不提醒';
   }
 
+  /* ---------- 保存失败提示 ----------
+   * 写不进 localStorage 时，刚才的改动只在这个页面的内存里，
+   * 一跳页面或关掉就没了（连「更多」页都去不了，去了就是重新读盘）。
+   * 所以就地给一次机会：直接在这里下载一份当前账目。
+   * 一个页面只提示一次，免得连续弹窗。 */
+  var writeErrorShown = false;
+  function handleWriteError() {
+    if (writeErrorShown) return;
+    writeErrorShown = true;
+    var ok = confirm('⚠ 保存失败：手机存储可能满了或被限制，刚才的改动没有存进去。\n\n' +
+      '点「确定」立刻下载一份当前账目备份（包含刚才的改动），\n' +
+      '然后清理手机存储空间，再到「更多 → 导入 JSON」导回来。\n\n' +
+      '下载前不要切换页面。');
+    if (!ok) return;
+    try {
+      var s = Store.state();
+      download('记账-紧急备份-' + s.today + '.json', Store.exportJSON());
+    } catch (e) {
+      alert('下载失败：' + (e && e.message ? e.message : e));
+    }
+  }
+  if (typeof Store !== 'undefined' && Store.onWriteError) Store.onWriteError(handleWriteError);
+
   return {
     base: base, url: url, abs: abs,
     icon: icon, nav: nav, shell: shell, sheet: sheet,
