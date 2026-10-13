@@ -133,6 +133,11 @@ var Store = (function () {
 
   var cache = null;
   var lastUpgrade = null;   // 本次打开时的结构升级信息，给「更多」页显示
+  /* 「今天」是否被固定住。只有测试注入种子（loadRaw）时才固定，
+     只存在内存里、不写进 localStorage，刷新页面就恢复成真实日期。 */
+  var pinnedToday = '';
+  /* 保存失败时的回调（ui.js 注册，负责弹提示）。数据层自己不碰界面。 */
+  var writeErrorHandler = null;
 
   /**
    * 读取。流程：
@@ -143,7 +148,11 @@ var Store = (function () {
    * 任何一步失败都退回「用原始数据 + 补齐缺省字段」，不丢东西。
    */
   function read() {
-    if (cache) return cache;
+    if (cache) {
+      // 页面开着跨过了零点：把「今天」换成新的一天
+      if (!pinnedToday && cache.today !== today()) cache.today = today();
+      return cache;
+    }
     var raw = null;
     try { raw = localStorage.getItem(KEY); } catch (e) { raw = null; }
     if (!raw) {
@@ -232,9 +241,12 @@ var Store = (function () {
     out.cycleHistory = s.cycleHistory || [];
     out.lastExportAt = s.lastExportAt || '';
     out.categories = s.categories && s.categories.length ? s.categories : base.categories;
-    /* 「今天」默认刷新到真实日期，保证倒计时 / 教学周是真的。
-       但导入了带 today 的数据（导出给随记再导入）时，以数据里带的 today 为准。 */
-    out.today = s.today || today();
+    /* 「今天」**永远**用真实日期，不读存下来的旧值。
+       之前是 s.today || today()：第一次打开时 today 被写进 localStorage，
+       之后每次读都沿用旧值，周期、倒计时、记账默认日期全部卡在安装那天。
+       导出文件里的 today 只表示「导出那天」，导入时也不沿用。
+       测试要固定日期请用 loadRaw（见下）。 */
+    out.today = today();
     out.version = SCHEMA_VERSION;
     return out;
   }
@@ -268,26 +280,60 @@ var Store = (function () {
     } catch (e) { return []; }
   }
 
+  /**
+   * 写入 localStorage。
+   * 写不进去时**不能静默吞掉**：界面会显示「已记」但其实没存，下次打开就丢了。
+   *   1. 先试着腾地方：自动备份历史只留最新 1 份，再写一次
+   *   2. 还是失败 → 调 ui.js 注册的回调，提示用户立刻导出备份
+   * 返回值仍是 s（各处调用都拿返回值当新状态用），失败信息看 lastWriteOk()。
+   */
+  var lastWriteOkFlag = true;
+  function rawSet(text) {
+    localStorage.setItem(KEY, text);
+  }
   function write(s) {
     cache = s;
-    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* 隐私模式下写不进去也不影响本次会话 */ }
-    return s;
+    var text = JSON.stringify(s);
+    try {
+      rawSet(text);
+      lastWriteOkFlag = true;
+      return s;
+    } catch (e1) {
+      // 多半是存储满了：先裁掉备份历史再试一次
+      try {
+        var hist = JSON.parse(localStorage.getItem(BACKUP_HISTORY_KEY) || '[]');
+        if (Array.isArray(hist) && hist.length > 1) {
+          localStorage.setItem(BACKUP_HISTORY_KEY, JSON.stringify(hist.slice(0, 1)));
+        }
+        rawSet(text);
+        lastWriteOkFlag = true;
+        return s;
+      } catch (e2) {
+        lastWriteOkFlag = false;
+        if (typeof writeErrorHandler === 'function') {
+          try { writeErrorHandler(e2); } catch (e3) { /* 回调出错也不能挡住流程 */ }
+        }
+        return s;
+      }
+    }
   }
+
+  function onWriteError(fn) { writeErrorHandler = fn; }
+  function lastWriteOk() { return lastWriteOkFlag; }
 
   /** 取一份可安全改的副本 */
   function state() {
     return read();
   }
 
-  /** 外部直接写入一份完整数据（导入、测试注入种子用），会清掉内存缓存。
-      注意：这里不走 migrate，所以注入的 today 等字段原样保留。 */
   /**
    * 直接塞一份数据进来（测试注入、导入旧版本文件）。
    * 关键：**照样走版本升级**，否则导入一个旧版本的文件，
    * 新代码读到缺失的字段就会出错。
    */
-  function loadRaw(obj) {
-    var data = obj;
+  /** 导入和测试注入共用：旧版本先备份再升级，新版本补齐字段，然后写入。 */
+  function ingest(obj) {
+    var data;
     var v = (obj && typeof obj.version === 'number') ? obj.version : 0;
     if (v < SCHEMA_VERSION) {
       /* 旧版本数据：先自动备份原始内容，再升级 —— 和打开 App 时同一条路径 */
@@ -295,11 +341,20 @@ var Store = (function () {
       lastUpgrade = { from: v, to: SCHEMA_VERSION, at: today(), autoBackup: true };
       data = upgrade(obj, v);
     } else {
-    data = fill(Calc.clone(obj));
+      data = fill(Calc.clone(obj));
     }
-    try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) { /* noop */ }
-    cache = data;
     return data;
+  }
+
+  /**
+   * 测试注入种子用。和导入的唯一区别：数据里带的 today 会被**固定**住
+   * （只在内存里，刷新页面即恢复真实日期），让验收测试能按固定日期跑。
+   */
+  function loadRaw(obj) {
+    var data = ingest(obj);
+    pinnedToday = (obj && obj.today) ? obj.today : '';
+    if (pinnedToday) data.today = pinnedToday;
+    return write(data);
   }
 
   function save(mutator) {
@@ -771,12 +826,14 @@ var Store = (function () {
    * **覆盖前自动把当前数据存一份备份**，即使导入错了也能退回。
    */
   function importJSON(text) {
+    // 先解析：文件坏了直接报错，不白白占一份备份
+    var data = JSON.parse(text);
+    if (!data || typeof data !== 'object') throw new Error('文件里没有账目数据');
     var cur = read();
     try { pushAutoBackup(JSON.stringify(cur), cur.version); } catch (e) { /* noop */ }
-    var data = JSON.parse(text);
-    cache = fill(data);
-    write(cache);
-    return cache;
+    // 和打开 App、loadRaw 同一条路径：旧版本文件会先升级，不会直接标成新版本
+    pinnedToday = '';
+    return write(ingest(data));
   }
 
   /** 距上次备份多少天。没导出过算 0 天（= 该备份了） */
@@ -818,6 +875,8 @@ var Store = (function () {
     save: save,
     reset: reset,
     write: write,
+    onWriteError: onWriteError,
+    lastWriteOk: lastWriteOk,
     uid: uid,
     nowHM: nowHM,
     addEntry: addEntry,
