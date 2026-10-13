@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>流水</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="scroll" id="scroll"></div>
+  <nav class="nav" aria-label="底部导航"></nav>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var S = Store.state();
+  var date = UI.qs('date') || S.today;
+
+  document.querySelector('.nav').outerHTML = UI.nav('flow');
+  var root = document.getElementById('scroll');
+
+  function render() {
+    var S = Store.state();
+    var cycleKey = Calc.cycleKeyForDate(S, date);
+    var list = Calc.entriesOfCycle(S, cycleKey).filter(function (e) { return e.date === date; });
+
+    var total = Calc.sum(list, function (e) { return e.amount; });
+    var byEnv = {};
+    list.forEach(function (e) {
+      byEnv[e.envelope] = Calc.round2((byEnv[e.envelope] || 0) + e.amount);
+    });
+    var envNames = { food: '吃饭', sub: '固定订阅', taxi: '机动', other: '机动·其他', free: '自由支配' };
+    var envChips = Object.keys(byEnv).map(function (k) {
+      return '<span class="tag">' + (envNames[k] || k) + ' ' + Calc.num(byEnv[k]) + '</span>';
+    }).join('');
+
+    var ENV_LABEL = { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
+    var rows = list.map(function (e) {
+      var seq = Calc.occurrenceIndex(S, e);
+      var counted = (e.catName === '打车（计次）' || e.catName === '外卖（计次）');
+      var impact = '';
+      if (e.envelope === 'free') {
+        var im = Calc.impactOfEntry(S, { amount: e.amount, catId: e.catId, envelope: 'free', id: '__none__' });
+        impact = im.applies ? ' · 排表最低点 ' + Calc.num(im.minAfter) : '';
+      }
+      return '<div class="flow-item">' +
+        '<div class="flow-item__t">' + UI.esc(e.time) + '</div>' +
+        '<div class="flow-item__b">' +
+          '<div class="flow-item__n">' + UI.esc(e.catName) +
+            (counted ? ' · 第 ' + seq + ' 次' : '') +
+            (e.note ? ' · ' + UI.esc(e.note) : '') + '</div>' +
+          '<div class="flow-item__s">' + UI.esc(e.cat1) + ' · 出钱：' + (ENV_LABEL[e.envelope] || e.envelope) + impact + '</div>' +
+        '</div>' +
+        '<div class="flow-item__a">' + UI.signed(e.amount) + '</div>' +
+        '<button type="button" class="item-row__edit" data-del="' + e.id + '" aria-label="删除">' + UI.icon('close', 14) + '</button>' +
+        '</div>';
+    }).join('');
+
+    var isToday = date === S.today;
+    root.innerHTML =
+      '<h1 style="margin:0;font-size:24px;font-weight:700">流水</h1>' +
+
+      '<div class="date-nav">' +
+        '<button type="button" class="icon-btn" data-nav="-1" aria-label="前一天">' + UI.icon('left', 18) + '</button>' +
+        '<button type="button" class="date-nav__mid" id="pickDate">' + Calc.mdLabel(date) + ' ' + Calc.weekdayCN(date) +
+          (isToday ? '<span class="tag" style="font-size:11px">今天</span>' : '') + '</button>' +
+        '<button type="button" class="icon-btn" data-nav="1" aria-label="后一天">' + UI.icon('right', 18) + '</button>' +
+      '</div>' +
+
+      '<section class="card">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span class="card-label">当日合计</span>' +
+          '<span style="font-size:28px;font-weight:700">' + UI.money(total) + '</span>' +
+        '</div>' +
+        (envChips ? '<div class="chips">' + envChips + '</div>' : '<div class="hint">这天还没有记账</div>') +
+      '</section>' +
+
+      '<section class="card card--flush">' + (rows || '<div class="hint" style="padding:14px 0">没有记录</div>') + '</section>' +
+
+      '<div class="spacer"></div>' +
+      '<a class="btn btn--lg btn--block" href="' + UI.url('add.html') + '?date=' + date + '">' +
+        UI.icon('plus', 20, '#fff') + '记一笔</a>';
+
+    /* 日期跳转：原生 date 输入 */
+    UI.on(root, '#pickDate', 'click', function () {
+      var inp = document.createElement('input');
+      inp.type = 'date';
+      inp.value = date;
+      inp.style.cssText = 'position:absolute;left:0;top:0;opacity:0;width:100%;height:100%';
+      inp.onchange = function () { date = inp.value; render(); };
+      document.querySelector('.phone').appendChild(inp);
+      inp.click();
+    });
+
+    UI.on(root, '[data-nav]', 'click', function (el) {
+      date = Calc.addDays(date, Number(el.getAttribute('data-nav')));
+      render();
+    });
+
+    UI.on(root, '[data-del]', 'click', function (el) {
+    var id = el.getAttribute('data-del');
+      /* 第 8 节：删除一笔带已买记录的支出时，先问要不要放回排表 */
+      var rec = Store.boughtRecordOf(Store.state(), id);
+      if (rec) {
+    var back = confirm('这笔是「' + rec.name + '」买下来的（估计 ' + UI.money(rec.estimate) +
+          '，实际 ' + UI.money(rec.actual) + '）。\n要把 ' + rec.name + ' 放回排表吗？');
+        Store.removeEntry(id);
+if (back) {
+      /* 第 8 节：按快照原样恢复（id / 置顶 / 希望在哪个周期前买到等），
+         keepEstimate 表示金额也用排表里的估计值，不改成实际花掉的 */
+          Store.restoreToPlan(id, { keepEstimate: true });
+          UI.toast('已把 ' + rec.name + ' 放回排表');
+        } else {
+      UI.toast('已删除，' + rec.name + ' 不放回排表');
+        }
+        render();
+        return;
+      }
+      if (!confirm('删掉这一笔？账户余额会退回去。')) return;
+      Store.removeEntry(id);
+      render();
+      UI.toast('已删除');
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
