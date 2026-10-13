@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>大目标</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone phone--tall">
+  <div class="scroll scroll--tight" id="scroll"></div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var root = document.getElementById('scroll');
+  var editing = null;
+
+  function cycleOptions(selected) {
+    var S = Store.state();
+    var keys = [Calc.deriveCycle(S).key].concat(Calc.nextCycleKeys(Calc.deriveCycle(S).key, 18));
+    return keys.map(function (k) {
+      return '<option value="' + k + '"' + (selected === k ? ' selected' : '') + '>' + Calc.cycleLabel(k) + '</option>';
+    }).join('');
+  }
+
+  function render() {
+    var S = Store.state();
+    var cycle = Calc.deriveCycle(S);
+    var plans = Calc.goalPlans(S);
+
+    var listHtml = plans.length ? plans.map(function (g, i) {
+      return '<section class="card card--tight">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span style="font-size:15px;font-weight:600">' + (i + 1) + ' · ' + UI.esc(g.name) +
+            (g.done ? ' <span class="tag tag--ok">已达成</span>' : '') + '</span>' +
+          '<span style="font-size:15px;font-weight:700">' + UI.money(g.saved) +
+            ' <span style="font-size:13px;font-weight:400;color:var(--ink-2)">/ ' + UI.num(g.target) + '</span></span>' +
+        '</div>' +
+        '<div class="progress progress--purple"><i style="width:' + g.pct + '%"></i></div>' +
+        '<div class="hint">' + g.cycleLabel + '前达成 · 还差 ' + UI.money(g.remain) +
+          ' · 剩 ' + g.remainCycles + ' 个周期 · 本周期应拨 ' + UI.money(g.perCycle) + '</div>' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--outline btn--sm" data-edit="' + g.id + '">改</button>' +
+          '<button type="button" class="btn btn--muted btn--sm" data-add="' + g.id + '">记一笔投入</button>' +
+          '<button type="button" class="btn btn--danger btn--sm" data-del="' + g.id + '">删</button>' +
+        '</div>' +
+        '</section>';
+    }).join('') : '<div class="hint">还没有大目标</div>';
+
+    var formHtml = editing ? (
+      '<section class="card">' +
+        '<div class="section-title">' + (editing.id ? '改目标' : '新建目标') + '</div>' +
+        '<div class="field"><label for="gname">名称</label>' +
+          '<input id="gname" class="input" value="' + UI.esc(editing.name || '') + '" placeholder="出游"></div>' +
+        '<div class="grid2">' +
+          '<div class="field"><label for="gtarget">目标金额</label>' +
+            '<input id="gtarget" class="input input--num" value="' + (editing.target || '') + '" placeholder="10000"></div>' +
+          '<div class="field"><label for="gsaved">已攒</label>' +
+            '<input id="gsaved" class="input input--num" value="' + (editing.saved || 0) + '"></div>' +
+        '</div>' +
+        '<div class="field"><label for="gcycle">希望达成的周期</label>' +
+          '<select id="gcycle" class="input">' + cycleOptions(editing.cycleKey) + '</select></div>' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--muted" id="cancel">取消</button>' +
+          '<button type="button" class="btn" style="flex:2" id="save">保存</button>' +
+        '</div>' +
+      '</section>'
+    ) : '';
+
+    root.innerHTML =
+      '<div class="topbar topbar--center">' +
+        '<a class="icon-btn" href="' + UI.url('more.html') + '" aria-label="返回">' + UI.icon('left', 18) + '</a>' +
+        '<h2>大目标</h2>' +
+        '<button type="button" class="btn btn--outline btn--sm" id="new">＋ 新建</button>' +
+      '</div>' +
+      '<div class="hint">每周期应拨 =（目标 − 已攒）÷ 剩余周期数。「收到绩效」全部投进目标，按顺序先填满一个；没有目标时一半进定期一半进攒着。</div>' +
+      listHtml +
+      formHtml;
+
+    UI.on(root, '#new', 'click', function () {
+      editing = { name: '', target: '', saved: 0, cycleKey: Calc.nextCycleKeys(Calc.deriveCycle(S).key, 6)[0], order: Calc.goalPlans(S).length + 1 };
+      render();
+    });
+    UI.on(root, '[data-edit]', 'click', function (el) {
+      var id = el.getAttribute('data-edit');
+      (S.goals || []).forEach(function (g) { if (g.id === id) editing = JSON.parse(JSON.stringify(g)); });
+      render();
+    });
+    UI.on(root, '[data-del]', 'click', function (el) {
+      if (!confirm('删除这个目标？')) return;
+      Store.removeById('goals', el.getAttribute('data-del'));
+      render();
+    });
+    UI.on(root, '[data-add]', 'click', function (el) {
+      var id = el.getAttribute('data-add');
+      var a = prompt('本次投入金额', '500');
+      if (!a) return;
+      Store.save(function (s) {
+        var next = JSON.parse(JSON.stringify(s));
+        (next.goals || []).forEach(function (g) {
+          if (g.id === id) g.saved = Calc.round2(Calc.nz(g.saved, 0) + Number(a));
+        });
+        next.accounts.goal = Calc.round2(Calc.nz(next.accounts.goal, 0) + Number(a));
+        return next;
+      });
+      render();
+      UI.toast('已投入，应拨已重算');
+    });
+    UI.on(root, '#cancel', 'click', function () { editing = null; render(); });
+    UI.on(root, '#save', 'click', function () {
+      editing.name = root.querySelector('#gname').value;
+      editing.target = Number(root.querySelector('#gtarget').value) || 0;
+      editing.saved = Number(root.querySelector('#gsaved').value) || 0;
+      editing.cycleKey = root.querySelector('#gcycle').value;
+      if (!editing.name) { UI.toast('先填名称'); return; }
+      Store.upsertGoal(editing);
+      editing = null;
+      render();
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
