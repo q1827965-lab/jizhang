@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>记账</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="记账">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="scroll" id="scroll"></div>
+  <nav class="nav" aria-label="底部导航"></nav>
+</div>
+<script src="js/png-data.js"></script>
+  <script src="js/calc.js"></script>
+<script src="js/store.js"></script>
+<script src="js/ui.js"></script>
+<script>
+/* 首页 = 打开 App 的第一个页面。加到主屏幕后点图标也到这里。 */
+location.replace('pages/home.html');
+</script>
+</body>
+</html>
