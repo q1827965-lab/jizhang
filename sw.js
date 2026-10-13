@@ -6,7 +6,7 @@
  *
  * 注意：**账目数据不在这里**，数据存在 localStorage，SW 不碰。
  */
-var CACHE = 'ledger-v1';        // 缓存名。改了代码就把版本号 +1
+var CACHE = 'ledger-v2';        // 缓存名。改了代码就把版本号 +1
 var ASSETS = [
   './',
   './index.html',
