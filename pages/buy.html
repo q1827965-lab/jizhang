@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>买不买</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="sheet-mask">
+    <div class="sheet" id="sheet"></div>
+  </div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var S = Store.state();
+  var draft = {
+    name: UI.qs('name') || '',
+    amount: UI.qsNum('amount') != null ? UI.qsNum('amount') : '',
+    kind: 'want',
+    cycleKey: Calc.nextCycleKeys(Calc.deriveCycle(S).key, 1)[0]
+  };
+  var body = document.getElementById('sheet');
+  var lastVerdict = null;
+
+  function cycleOptions() {
+    var keys = [Calc.deriveCycle(S).key].concat(Calc.nextCycleKeys(Calc.deriveCycle(S).key, 8));
+    return keys.map(function (k) {
+      return '<option value="' + k + '"' + (draft.cycleKey === k ? ' selected' : '') + '>' + Calc.cycleLabel(k) + '</option>';
+    }).join('');
+  }
+
+  function render() {
+    S = Store.state();
+    var v = null;
+    if (draft.amount !== '' && Number(draft.amount) > 0) {
+      v = Calc.buyVerdict(S, { name: draft.name, amount: Number(draft.amount), kind: draft.kind, cycleKey: draft.cycleKey });
+      lastVerdict = v;
+    }
+    var isNeed = draft.kind === 'need';
+
+    var verdictHtml;
+    if (!v) {
+      verdictHtml = '<div class="verdict"><span class="verdict__label">结论</span>' +
+        '<span class="verdict__main" style="color:var(--ink-2);font-size:16px">填上金额，立刻给结论</span></div>';
+    } else {
+      verdictHtml = '<div class="verdict">' +
+        '<span class="verdict__label">结论</span>' +
+        '<span class="verdict__main' + (v.conclusion === 'no' ? ' no' : '') + '">' + UI.esc(v.label) + '</span>' +
+        '<div class="verdict__reasons">' +
+          v.reasons.map(function (r) { return '<span>· ' + UI.esc(r) + '</span>'; }).join('') +
+        '</div></div>';
+    }
+
+    body.innerHTML =
+      '<div class="sheet-grip"></div>' +
+      '<div class="topbar topbar--center">' +
+        '<h2>买不买？</h2>' +
+        '<a class="icon-btn icon-btn--flat" href="' + UI.url('plan.html') + '" aria-label="关闭">' + UI.icon('close', 18) + '</a>' +
+      '</div>' +
+
+      '<div class="grid2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">' +
+        '<div class="field"><label for="name">想买什么</label>' +
+          '<input id="name" class="input" value="' + UI.esc(draft.name) + '" placeholder="保温杯"></div>' +
+        '<div class="field"><label for="price">金额</label>' +
+          '<input id="price" class="input input--num" inputmode="decimal" value="' + (draft.amount === '' ? '' : draft.amount) + '" placeholder="0"></div>' +
+      '</div>' +
+
+      '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
+        '<span class="card-label">这是</span>' +
+        '<div class="seg">' +
+          '<button type="button" data-kind="need" aria-pressed="' + isNeed + '">必要的</button>' +
+          '<button type="button" data-kind="want" aria-pressed="' + !isNeed + '">想要的</button>' +
+        '</div>' +
+        (isNeed
+          ? '<select id="payCycle" class="input">' + cycleOptions() + '</select>' +
+            '<span class="hint">选“必要的”会再让你选付款周期，放进排表时成为排定项</span>'
+          : '<span class="hint">选“想要的”放进排表时成为条件项，按最贵优先排队</span>') +
+      '</div>' +
+
+      verdictHtml +
+
+      '<div class="sheet-actions">' +
+        '<button type="button" class="btn btn--lg btn--block" id="addPlan"' + (v && v.conclusion === 'no' ? ' disabled' : '') + '>放进排表</button>' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--outline" id="buyNow">现在就买</button>' +
+          '<a class="btn btn--muted" href="' + UI.url('plan.html') + '">算了</a>' +
+        '</div>' +
+      '</div>';
+
+    function softUpdate() {
+      var a = Number(draft.amount);
+      if (!a || a <= 0) return;
+      var vv = Calc.buyVerdict(S, { name: draft.name, amount: a, kind: draft.kind, cycleKey: draft.cycleKey });
+      lastVerdict = vv;
+      var box = body.querySelector('.verdict');
+      if (!box) return;
+      box.outerHTML = '<div class="verdict">' +
+        '<span class="verdict__label">结论</span>' +
+        '<span class="verdict__main' + (vv.conclusion === 'no' ? ' no' : '') + '">' + UI.esc(vv.label) + '</span>' +
+        '<div class="verdict__reasons">' +
+          vv.reasons.map(function (r) { return '<span>· ' + UI.esc(r) + '</span>'; }).join('') +
+        '</div></div>';
+      body.querySelector('#addPlan').disabled = (vv.conclusion === 'no');
+    }
+
+    UI.on(body, '#name', 'input', function (el) { draft.name = el.value; });
+    UI.on(body, '#price', 'input', function (el) {
+      draft.amount = el.value === '' ? '' : Number(el.value);
+      softUpdate();
+    });
+    UI.on(body, '[data-kind]', 'click', function (el) { draft.kind = el.getAttribute('data-kind'); render(); });
+    UI.on(body, '#payCycle', 'change', function (el) { draft.cycleKey = el.value; softUpdate(); });
+
+    UI.on(body, '#addPlan', 'click', function () {
+      if (!lastVerdict) { UI.toast('先填金额'); return; }
+      Store.addFromVerdict({
+        addAs: lastVerdict.addAs,
+        name: draft.name || '未命名',
+        amount: Number(draft.amount),
+        cycleKey: draft.cycleKey
+      });
+      location.href = UI.url('plan.html');
+    });
+
+/* 第 8 节：「现在就买」不能绕过匹配检查 —— 一定要跳到记一笔，
+       由记一笔的排表匹配检查来确认是不是排表里的某一项。
+       这里预填名称和金额，并带上 fromBuy 标记让记一笔提示用户。 */
+    UI.on(body, '#buyNow', 'click', function () {
+      if (!lastVerdict) { UI.toast('先填金额'); return; }
+      if (lastVerdict.conclusion === 'no') { UI.toast('不建议买，这条路走不通'); return; }
+      UI.go('add.html', {
+     amount: Number(draft.amount),
+        catId: draft.kind === 'need' ? 'c-trans-need' : 'c-hobby-extra',
+        envelope: 'free',
+        note: draft.name,
+   fromBuy: '1'
+      });
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
