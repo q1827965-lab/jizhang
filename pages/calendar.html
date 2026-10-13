@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>日历</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="scroll scroll--tight" id="scroll"></div>
+  <nav class="nav" aria-label="底部导航"></nav>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  document.querySelector('.nav').outerHTML = UI.nav('calendar');
+  var root = document.getElementById('scroll');
+  var S0 = Store.state();
+  var y = Number(UI.qs('y')) || Number(S0.today.slice(0, 4));
+  var m = Number(UI.qs('m')) || Number(S0.today.slice(5, 7));
+  var sel = UI.qs('date') || S0.today;
+
+  function render() {
+    var S = Store.state();
+    var cells = Calc.monthGrid(S, y, m);
+    var trips = S.trips || [];
+
+    /* 出行横条：把跨越多天的出行画成一条连贯的横条（规格第 11 节）。
+       做法：先算出这段出行在月网格里覆盖的列区间，再按区间一次画出来，
+       不要按「起点/终点」各画一段，否则中间会断开。 */
+    var bars = [];
+    trips.forEach(function (t) {
+      var from = Math.max(t.start, y + '-' + Calc.pad2(m) + '-01');
+      var lastDay = Calc.daysInMonth(y, m);
+      var to = Math.min(t.end, y + '-' + Calc.pad2(m) + '-' + Calc.pad2(lastDay));
+      if (from > to) return;
+      /* 找出这段出行落在月网格里的首末列（网格共 6 行 × 7 列，周一开头） */
+      var firstIdx = -1, lastIdx = -1;
+      cells.forEach(function (c, i) {
+        if (!c.date || c.date < from || c.date > to) return;
+        if (firstIdx < 0) firstIdx = i;
+        lastIdx = i;
+      });
+      if (firstIdx < 0) return;
+      var c0 = firstIdx % 7, c1 = lastIdx % 7, span = c1 - c0 + 1;
+      var cls = 'trip-bar ' + (span > 1 ? 'trip-bar--mid' : 'trip-bar--start');
+      bars.push('<div class="' + cls + '" style="left:calc(' + c0 + ' * (100% / 7) + 2px);' +
+        'width:calc(' + span + ' * (100% / 7) - 4px);">' + UI.esc(t.title) + '</div>');
+    });
+
+    var rowsHtml = '';
+    for (var i = 0; i < cells.length; i += 7) {
+      rowsHtml += '<div class="month-row">' + cells.slice(i, i + 7).map(function (c) {
+if (!c.date) return '<div class="mcell mcell--out"></div>';
+        var cls = 'mcell mcell--' + c.status + (c.date === S.today ? ' is-today' : '') + (c.date === sel ? ' is-selected' : '');
+        // 第 11 节：没排班的日子显示「未排」，不能显示成「休」
+        var showUnset = (c.status === 'unset');
+        return '<button type="button" class="' + cls + '" data-date="' + c.date + '">' +
+   (showUnset ? '<span class="unset-label">未排</span>' : c.label) +
+  (c.status === 'night' ? '<span class="night-badge">晚</span>' : '') +
+          (c.status === 'travel' ? '<span class="travel-label">出行</span>' : '') +
+          (c.hasEvent ? '<span class="event-dot"></span>' : '') +
+    '</button>';
+      }).join('') + '</div>';
+    }
+
+    var selStatus = Calc.dayStatus(S, sel);
+    var dayEvents = (S.events || []).filter(function (e) { return e.date === sel; });
+    var dayTrips = Calc.tripsCovering(S, sel);
+
+    var detail =
+      '<div class="inline"><span style="font-size:16px;font-weight:700">' + Calc.mdLabel(sel) + ' ' + Calc.weekdayCN(sel) + '</span>' +
+      UI.tag(UI.statusText(selStatus), selStatus === 'travel' ? 'purple' : 'muted') + '</div>';
+
+    dayTrips.forEach(function (t) {
+      detail += '<div class="row-between" style="background:var(--purple-bg);border-radius:12px;padding:10px 12px">' +
+        '<span style="font-size:14px">' + UI.esc(t.title) + '</span>' +
+        '<span class="hint">' + Calc.mdLabel(t.start) + (t.end !== t.start ? '–' + Calc.mdLabel(t.end) : '') + '</span></div>';
+    });
+
+    dayEvents.forEach(function (e) {
+      detail += '<div class="inline" style="align-items:flex-start;gap:12px;background:var(--bg);border-radius:12px;padding:10px 12px">' +
+        '<span style="font-size:15px;font-weight:700;color:var(--blue)">' + UI.esc(e.time) + '</span>' +
+        '<div style="flex:1"><div style="font-size:15px;font-weight:500">' + UI.esc(e.title) + '</div>' +
+        '<div class="hint" style="margin-top:2px">' + UI.remindText(e.remind) + '</div></div>' +
+        '<button type="button" class="item-row__edit" data-delev="' + e.id + '" aria-label="删除事项">' + UI.icon('close', 14) + '</button>' +
+        '</div>';
+    });
+
+    detail += '<div class="btn-row">' +
+      '<button type="button" class="btn btn--outline btn--sm" id="addEvent">＋ 添加事项</button>' +
+      '<button type="button" class="btn btn--purple btn--sm" id="addTrip">＋ 添加出行</button>' +
+      '</div>';
+
+    root.innerHTML =
+      '<div class="topbar topbar--center">' +
+        '<h1>日历</h1>' +
+        '<div class="inline">' +
+          '<button type="button" class="icon-btn" data-mon="-1" aria-label="上个月">' + UI.icon('left', 16) + '</button>' +
+          '<span style="font-size:15px;font-weight:700;padding:0 6px">' + y + '年' + m + '月</span>' +
+          '<button type="button" class="icon-btn" data-mon="1" aria-label="下个月">' + UI.icon('right', 16) + '</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<section class="card" style="padding:12px 10px">' +
+        '<div class="month-head"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>' +
+        rowsHtml +
+        (bars.length ? '<div style="position:relative;height:0">' + bars.join('') + '</div>' : '') +
+'<div class="legend">' +
+          '<span><i style="background:var(--blue-150)"></i>上班</span>' +
+          '<span><i style="background:var(--green)"></i>休息</span>' +
+     '<span><span style="font-size:10px;color:#9A3412;background:var(--orange-chip);border-radius:4px;padding:0 3px">晚</span>晚班</span>' +
+          '<span><i style="background:var(--purple-bg)"></i>出行</span>' +
+          '<span><i style="background:var(--gray-200,#E5E7EB)"></i>未排</span>' +
+          '<span><i style="background:var(--blue);width:6px;height:6px;border-radius:3px"></i>有事项</span>' +
+   '</div>' +
+      '</section>' +
+
+      '<section class="card card--tight">' + detail + '</section>' +
+
+      '<div class="hint" style="text-align:center">点日期依次切换：上班 → 休息 → 晚班 → 出行 → 未排<br>出行日不算晚班，打车额度不给这几天预留</div>';
+
+    UI.on(root, '[data-mon]', 'click', function (el) {
+      m += Number(el.getAttribute('data-mon'));
+      if (m < 1) { m = 12; y--; }
+      if (m > 12) { m = 1; y++; }
+      render();
+    });
+    UI.on(root, '[data-date]', 'click', function (el) {
+      sel = el.getAttribute('data-date');
+      /* 规格第 11 节：点日期依次切换 上班 → 休息 → 晚班 → 出行 */
+      Store.cycleDayStatus(sel);
+      render();
+    });
+    UI.on(root, '[data-delev]', 'click', function (el) {
+      Store.removeById('events', el.getAttribute('data-delev'));
+      render();
+    });
+
+    var ae = root.querySelector('#addEvent');
+    if (ae) ae.onclick = function () {
+      var title = prompt('事项名称', '新事项');
+      if (!title) return;
+      var time = prompt('时间（HH:MM）', '09:00');
+      var remindDay = confirm('提前 1 天提醒？\n（取消 = 只提前 1 小时）');
+      Store.addEvent({ date: sel, time: time || '09:00', title: title, remind: remindDay ? [1440, 60] : [60] });
+      render();
+      UI.toast('已添加。Demo 只存设置，不真的响铃');
+    };
+    var at = root.querySelector('#addTrip');
+    if (at) at.onclick = function () {
+      var title = prompt('出行名称', '出行');
+      if (!title) return;
+      var end = prompt('结束日期（YYYY-MM-DD，出行含这天）', sel);
+      Store.addTrip({ title: title, start: sel, end: end || sel });
+      render();
+      UI.toast('已添加出行，这几天不算晚班');
+    };
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
