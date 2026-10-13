@@ -155,7 +155,7 @@ if (!c.date) return '<div class="mcell mcell--out"></div>';
       var remindDay = confirm('提前 1 天提醒？\n（取消 = 只提前 1 小时）');
       Store.addEvent({ date: sel, time: time || '09:00', title: title, remind: remindDay ? [1440, 60] : [60] });
       render();
-      UI.toast('已添加。Demo 只存设置，不真的响铃');
+      UI.toast('已添加。这个 App 只存提醒设置，不真的响铃');
     };
     var at = root.querySelector('#addTrip');
     if (at) at.onclick = function () {
