@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>编辑排表项目</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="sheet-mask sheet-mask--mid">
+    <div class="sheet" id="sheet"></div>
+  </div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var S = Store.state();
+  var id = UI.qs('id');
+  var item = null;
+  (S.planItems || []).forEach(function (it) { if (it.id === id) item = it; });
+
+  if (!item) {
+    document.getElementById('sheet').innerHTML =
+      '<div class="sheet-grip"></div>' +
+      '<div class="topbar topbar--center"><h2>编辑项目</h2>' +
+      '<a class="icon-btn icon-btn--flat" href="' + UI.url('plan.html') + '">' + UI.icon('close', 18) + '</a></div>' +
+      '<div class="hint">没找到这个项目，可能已经被删了。</div>' +
+      '<a class="btn btn--block" href="' + UI.url('plan.html') + '">回排表</a>';
+    return;
+  }
+
+  var draft = {
+    id: item.id,
+    type: item.type,
+    name: item.name,
+    amount: item.amount == null ? '' : item.amount,
+    cycleKey: item.cycleKey || '',
+    pinned: !!item.pinned,
+    buyBefore: item.buyBefore || ''
+  };
+
+  var body = document.getElementById('sheet');
+
+  function cycleOptions(selectedKey, withBlank) {
+    var keys = [Calc.deriveCycle(S).key].concat(Calc.nextCycleKeys(Calc.deriveCycle(S).key, 8));
+    var head = withBlank ? '<option value="">不设</option>' : '';
+    return head + keys.map(function (k) {
+      return '<option value="' + k + '"' + (selectedKey === k ? ' selected' : '') + '>' + Calc.cycleLabel(k) + '</option>';
+    }).join('');
+  }
+
+  function affordText() {
+    var probe = { id: draft.id, type: draft.type, name: draft.name, amount: draft.amount === '' ? null : Number(draft.amount), pinned: draft.pinned, buyBefore: draft.buyBefore };
+    var r = Calc.affordableCycleOf(S, probe);
+    if (draft.type === 'scheduled') return { text: draft.cycleKey ? Calc.cycleLabel(draft.cycleKey) + '付款' : '未选周期', tone: '' };
+    return { text: r.badge, tone: r.badgeTone === 'late' ? 'warn' : '' };
+  }
+
+  function render() {
+    var a = affordText();
+    var isSched = draft.type === 'scheduled';
+
+    body.innerHTML =
+      '<div class="sheet-grip"></div>' +
+      '<div class="topbar topbar--center">' +
+        '<h2>编辑项目</h2>' +
+        '<a class="icon-btn icon-btn--flat" href="' + UI.url('plan.html') + '" aria-label="关闭">' + UI.icon('close', 18) + '</a>' +
+      '</div>' +
+
+      '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
+        '<span class="card-label">类型</span>' +
+        '<div class="seg">' +
+          '<button type="button" data-type="scheduled" aria-pressed="' + isSched + '">排定项 · 到时间就付</button>' +
+          '<button type="button" data-type="conditional" aria-pressed="' + !isSched + '">条件项 · 够钱才买</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="grid2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">' +
+        '<div class="field"><label for="name">名称</label>' +
+          '<input id="name" class="input" value="' + UI.esc(draft.name) + '"></div>' +
+        '<div class="field"><label for="price">金额</label>' +
+          '<input id="price" class="input input--num" inputmode="decimal" value="' + (draft.amount === '' ? '' : draft.amount) + '" placeholder="未估价"></div>' +
+      '</div>' +
+
+      (isSched
+        ? '<div class="field"><label for="cycle">付款周期</label>' +
+          '<select id="cycle" class="input">' + cycleOptions(draft.cycleKey, false) + '</select></div>'
+        : '<div class="row-between">' +
+            '<span style="font-size:14px">希望在哪个周期前买到</span>' +
+            '<select id="buyBefore" class="input" style="width:auto;height:36px">' +
+              cycleOptions(draft.buyBefore, true) +
+            '</select>' +
+          '</div>' +
+          '<div class="row-between">' +
+            '<span style="font-size:14px">置顶<span class="hint" style="margin-left:6px">优先于最贵优先</span></span>' +
+            '<button type="button" class="switch" id="pin" role="switch" aria-checked="' + (draft.pinned ? 'true' : 'false') + '"><span></span></button>' +
+          '</div>') +
+
+      '<div class="callout' + (a.tone ? ' callout--warn' : '') + '">' +
+        '<span>按现在的余额算</span><b>' + UI.esc(a.text) + '</b></div>' +
+
+      '<a class="btn btn--outline btn--block" id="bought">已经买了 · 转成一笔支出</a>' +
+
+      '<div class="sheet-actions">' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--danger" id="del">删除</button>' +
+          '<button type="button" class="btn" style="flex:2" id="save">保存</button>' +
+        '</div>' +
+      '</div>';
+
+    UI.on(body, '[data-type]', 'click', function (el) {
+      draft.type = el.getAttribute('data-type');
+      if (draft.type === 'scheduled' && !draft.cycleKey) draft.cycleKey = Calc.deriveCycle(S).key;
+      render();
+    });
+    UI.on(body, '#name', 'input', function (el) { draft.name = el.value; refreshAfford(); });
+    UI.on(body, '#price', 'input', function (el) {
+      draft.amount = el.value === '' ? '' : Number(el.value);
+      refreshAfford();
+    });
+    UI.on(body, '#cycle', 'change', function (el) { draft.cycleKey = el.value; refreshAfford(); });
+    UI.on(body, '#buyBefore', 'change', function (el) { draft.buyBefore = el.value; refreshAfford(); });
+    UI.on(body, '#pin', 'click', function () { draft.pinned = !draft.pinned; render(); });
+
+/* 第 8 节：转成支出只有两条路，但实现上只有一条 ——
+       「已经买了」和记一笔的匹配确认，最终都由 add.html 保存时统一处理：
+       用实际金额写已买记录 + 移除排表项。
+       这里不先移除、不先写记录，只带排表项 id 跳到记一笔
+       （相当于已经确认的匹配），预填金额和分类。
+       这样用户如果关闭或取消，排表项还在、也不会有半截的已买记录。 */
+    UI.on(body, '#bought', 'click', function () {
+      var amt = draft.amount === '' ? 0 : Number(draft.amount);
+      if (!amt) { UI.toast('先填金额'); return; }
+      if (!confirm('确认已经买了？会打开记一笔预填金额；保存后这一项才会从排表移除。')) return;
+      UI.go('add.html', {
+        amount: amt,
+        catId: 'c-hobby-extra',
+        envelope: 'free',
+        note: draft.name,
+        date: Store.today(),
+        fromPlanId: draft.id      // 已确认的匹配：保存时移除这一项并写已买记录
+      });
+    });
+
+    UI.on(body, '#del', 'click', function () {
+      if (!confirm('删除「' + draft.name + '」？')) return;
+      Store.removePlanItem(draft.id);
+      location.href = UI.url('plan.html');
+    });
+
+    UI.on(body, '#save', 'click', function () {
+      if (!draft.name) { UI.toast('先填名称'); return; }
+      Store.upsertPlanItem(draft);
+      location.href = UI.url('plan.html');
+    });
+  }
+
+  function refreshAfford() {
+    var a = affordText();
+    var b = body.querySelector('.callout b');
+    if (b) b.textContent = a.text;
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
