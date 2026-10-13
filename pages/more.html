@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>更多</title>
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="scroll scroll--tight" id="scroll"></div>
+  <nav class="nav" aria-label="底部导航"></nav>
+</div>
+<input type="file" id="fileIn" accept="application/json,.json" style="display:none">
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  document.querySelector('.nav').outerHTML = UI.nav('more');
+  var root = document.getElementById('scroll');
+  var fileIn = document.getElementById('fileIn');
+  var pending = null;          // 待确认导入的文件文本
+
+  function render() {
+    var S = Store.state();
+    var cycle = Calc.deriveCycle(S);
+    var em = Calc.emergencyPlan(S);
+    var goals = Calc.goalPlans(S);
+    var deps = Calc.depositPlans(S);
+    var activeGoal = null;
+    goals.forEach(function (g) { if (!g.done && !activeGoal) activeGoal = g; });
+    var bk = Store.backupReminder();
+    var hist = Store.autoBackups();
+    var lastUp = Store.lastUpgradeInfo();
+
+    root.innerHTML =
+      '<h1 style="margin:0;font-size:24px;font-weight:700">更多</h1>' +
+
+      '<section class="card">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span style="font-size:16px;font-weight:700">发薪日流程</span>' +
+        '<span class="section-note">对账 · 转账清单 · 导出</span>' +
+        '</div>' +
+      '<div class="grid2">' +
+          UI.tile('预计发薪', Calc.mdLabel(cycle.expectedPayday)) +
+          UI.tile('最坏发薪', Calc.mdLabel(cycle.worstPayday)) +
+   '</div>' +
+ '<div class="hint">' + UI.esc(cycle.learn.note) + '</div>' +
+        '<a class="btn btn--block" href="' + UI.url('payday.html') + '">工资到了，开始</a>' +
+      '</section>' +
+
+      '<section class="card">' +
+        '<div class="row-between" style="align-items:baseline">' +
+       '<span style="font-size:16px;font-weight:700">应急金</span>' +
+  '<span style="font-size:15px;font-weight:700">' + UI.money(em.balance) +
+ ' <span style="font-size:13px;font-weight:400;color:var(--ink-2)">/ ' + UI.num(em.target) + '</span></span>' +
+  '</div>' +
+        '<div class="progress"><i style="width:' + em.pct + '%"></i></div>' +
+    '<div class="section-note">每个发薪日拨 ' + UI.num(em.perCycle) +
+          (em.perCycle ? ' · 约 ' + em.cyclesToFull + ' 个周期攒满' : '') +
+   ' · 待回补 ' + UI.num(em.usedSincePayday) + '</div>' +
+        '<div class="btn-row">' +
+       '<button type="button" class="btn btn--outline btn--sm" id="useEm">记一笔动用</button>' +
+      (em.uses.length ? '<button type="button" class="btn btn--muted btn--sm" id="showEm">动用记录 ' + em.uses.length + '</button>' : '') +
+ '</div>' +
+      '</section>' +
+
+      '<section class="card">' +
+   '<div class="row-between" style="align-items:center">' +
+  '<span style="font-size:16px;font-weight:700">大目标</span>' +
+          '<a class="btn btn--outline btn--sm" href="' + UI.url('goals.html') + '">管理</a>' +
+        '</div>' +
+        (activeGoal
+          ? '<div class="row-between" style="align-items:baseline">' +
+              '<span style="font-size:15px;font-weight:500">' + UI.esc(activeGoal.name) + '</span>' +
+              '<span style="font-size:15px;font-weight:700">' + UI.money(activeGoal.saved) +
+       ' <span style="font-size:13px;font-weight:400;color:var(--ink-2)">/ ' + UI.num(activeGoal.target) + '</span></span>' +
+            '</div>' +
+            '<div class="progress progress--purple"><i style="width:' + activeGoal.pct + '%"></i></div>' +
+   '<div class="section-note">' + activeGoal.cycleLabel + '前达成 · 本周期应拨 ' + UI.money(activeGoal.perCycle) +
+       ' · 绩效到账会自动重算</div>'
+ : '<div class="hint">还没有进行中的大目标</div>') +
+        '<button type="button" class="btn btn--outline btn--sm" id="bonus">收到绩效</button>' +
+      '</section>' +
+
+      '<section class="card">' +
+        '<div class="row-between" style="align-items:center">' +
+   '<span style="font-size:16px;font-weight:700">定期存单</span>' +
+   '<a class="btn btn--outline btn--sm" href="' + UI.url('deposits.html') + '">' +
+         deps.length + ' 张 · ' + UI.money(Calc.sum(deps, function (d) { return d.principal; })) + '</a>' +
+        '</div>' +
+        '<div class="hint">' + (deps.length
+          ? '最近一张 ' + deps[deps.length - 1].openDate + ' 开出，到期 ' + deps[deps.length - 1].dueDate
+          : '发薪日勾掉「工行 → 定期」会自动生成第一张') + '</div>' +
+ '</section>' +
+
+   '<section class="card">' +
+        '<div class="row-between" style="align-items:center">' +
+          '<span style="font-size:16px;font-weight:700">备份</span>' +
+          '<span class="section-note">' + UI.esc(bk.text) + '</span>' +
+        '</div>' +
+        '<div class="hint">' + (bk.need
+          ? '账目只存在这台手机上。换手机、清理浏览器数据、卸载重装都可能丢，导出一份才安全。'
+        : '导出的 JSON 就是完整账目，既是备份，也能发到电脑上的随记做复盘。') + '</div>' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--outline btn--sm" id="doExport">导出 JSON 备份</button>' +
+          '<button type="button" class="btn btn--outline btn--sm" id="doImport">导入 JSON</button>' +
+        '</div>' +
+        (lastUp
+          ? '<div class="hint" style="margin-top:8px">上次打开时数据结构从 v' + lastUp.from + ' 升到 v' + lastUp.to +
+       '，旧数据已自动备份' + (hist.length ? '（共 ' + hist.length + ' 份）' : '') + '</div>' +
+            (hist.length ? '<button type="button" class="btn btn--muted btn--sm" id="doHistory">查看自动备份</button>' : '')
+  : '') +
+      '</section>' +
+
+      '<section class="card card--flush">' +
+        '<div class="link-list">' +
+          '<a href="' + UI.url('settings.html') + '">' +
+            '<span style="flex:1"><span class="t">设置</span>' +
+          '<span class="s">信封额度 · 分类 · 底线和缓冲 · 教学周</span></span>' + UI.icon('chevron', 18, 'var(--ink-3)') +
+          '</a>' +
+   '<button type="button" id="wipe">' +
+            '<span style="flex:1"><span class="t" style="color:#B91C1C">清空全部账目</span>' +
+            '<span class="s">会删掉所有流水、排表、余额和定期存单，回到刚安装的样子</span></span>' + UI.icon('chevron', 18, 'var(--ink-3)') +
+          '</button>' +
+    '</div>' +
+      '</section>';
+
+    bind();
+  }
+
+  function bind() {
+    UI.on(root, '#doExport', 'click', function () {
+      UI.download(UI.exportFilename(Store.state()), Store.exportJSON());
+      Store.markExported();
+      render();
+      UI.toast('已导出，把这个文件存到电脑或发到微信收藏');
+    });
+
+    UI.on(root, '#doImport', 'click', function () { fileIn.click(); });
+
+    UI.on(root, '#doHistory', 'click', function () {
+      var list = Store.autoBackups();
+      var lines = list.map(function (b, i) {
+        return (i + 1) + '. ' + b.at.slice(0, 16).replace('T', ' ') +
+       '　来自 v' + b.fromVersion;
+      }).join('\n');
+      if (confirm('自动备份清单\n\n' + lines + '\n\n要下载最新的一份吗？')) {
+        UI.download('自动备份-' + list[0].at.slice(0, 10) + '.json', list[0].text);
+      }
+    });
+
+    /* 第 9 条：清空全部账目要输入「清空」两个字 */
+    UI.on(root, '#wipe', 'click', function () {
+      var msg = '这会删掉：\n' +
+        '· 所有流水（' + (Store.state().entries || []).length + ' 笔）\n' +
+        '· 排表里的东西（' + (Store.state().planItems || []).length + ' 项）\n' +
+        '· 所有账户余额、定���存单、大目标、日历排班\n\n' +
+    '删掉就找不回来了。\n\n' +
+        '强烈建议先点「导出 JSON 备份」导一份。\n\n' +
+        '确定要继续吗？';
+      if (!confirm(msg)) return;
+      var word = prompt('请输入「清空」两个字，确认执行：', '');
+      if (word === null) return;                       // 点了取消
+      if (String(word).trim() !== '清空') {
+        alert('输入的不是「清空」，没有执行任何操作。');
+    return;
+  }
+      if (!confirm('最后确认一次：真的要把全部账目清空吗？')) return;
+      // 清空前自动存一份自动备份，误点了还能从「查看自动备份」找回
+      try {
+        Store.importJSON(Store.exportJSON());   // 先触发一次自动备份（把当前数据存下来）
+      } catch (e) { /* noop */ }
+      Store.reset();
+      render();
+      UI.toast('已清空全部账目。误删了可以在「查看自动备份」里找回');
+    });
+
+    UI.on(root, '#useEm', 'click', function () {
+  var a = prompt('动用应急金金额', '500');
+      if (!a) return;
+      var r = prompt('用途', '坏了要换的');
+      Store.useEmergency(Number(a), r || '');
+ render();
+      UI.toast('已记录动用，下个发薪日会一次补完');
+ });
+    UI.on(root, '#showEm', 'click', function () {
+      var cur = Store.state();
+ var em = (cur.emergency && cur.emergency.uses) || [];
+      var lines = em.map(function (u) { return u.date + '　' + UI.money(u.amount) + '　' + UI.esc(u.reason || ''); });
+      alert('应急金动用记录\n\n' + (lines.length ? lines.join('\n') : '还没有动用过'));
+    });
+    UI.on(root, '#bonus', 'click', function () {
+      var a = prompt('绩效到账金额', '1000');
+      if (!a) return;
+      var S2 = Store.state();
+      var plan = Calc.allocateBonus(S2, Number(a));
+      Store.addBonus(Number(a));
+      render();
+  UI.toast(plan.note || '已入账，应拨已重算');
+    });
+  }
+
+  /* 第 5 条：导入前先显示文件里有什么，确认后才覆盖 */
+  fileIn.addEventListener('change', function () {
+    var f = fileIn.files && fileIn.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      pending = String(reader.result || '');
+      var r = Store.inspectJSON(pending);
+      if (!r.ok) { alert(r.error); pending = null; return; }
+      var s = r.summary;
+      var msg =
+        '这个文件里有：\n\n' +
+        '· 流水 ' + s.entryCount + ' 笔（合计 ' + UI.money(s.totalSpent) + '）\n' +
+   '· 排表 ' + s.planCount + ' 项（排定 ' + s.scheduledCount + '、条件 ' + s.conditionalCount + '）\n' +
+        '· 已买记录 ' + s.boughtCount + ' 条\n' +
+        '· 定期存单 ' + s.depositCount + ' 张、大目标 ' + s.goalCount + ' 个\n' +
+    '· 日历排班 ' + s.calendarDays + ' 天\n\n' +
+        '账户余额：\n' +
+        '· 攒着 ' + UI.money(s.accounts.cangzhe) + '\n' +
+        '· 农行 ' + UI.money(s.accounts.abc) + '\n' +
+        '· 工行 ' + UI.money(s.accounts.icbc) + '\n' +
+    '· 目标账户 ' + UI.money(s.accounts.goal) + '\n' +
+     '· 定期 ' + UI.money(s.accounts.deposit) + '\n' +
+        '· 应急金 ' + UI.money(s.emergency) + '\n\n' +
+        (s.exportedAt ? '导出时间：' + s.exportedAt.slice(0, 16).replace('T', ' ') + '\n\n' : '') +
+  '导入会**覆盖**现在手机里的账目。\n' +
+        '（覆盖前会自动存一份备份，导错了能从「查看自动备份」找回。）\n\n' +
+     '确认导入吗？';
+      if (!confirm(msg)) { pending = null; return; }
+      try {
+        Store.importJSON(pending);
+  pending = null;
+        render();
+  UI.toast('已导入 ' + f.name);
+      } catch (e) {
+        alert('导入失败：' + (e && e.message ? e.message : e));
+      }
+    };
+    reader.readAsText(f);
+    fileIn.value = '';
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
