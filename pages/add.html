@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>记一笔</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone">
+  <div class="sheet-mask sheet-mask--short">
+    <div class="sheet" id="sheet"></div>
+  </div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var S = Store.state();
+  var cycle = Calc.deriveCycle(S);
+  var env = Calc.envelopeState(S, cycle);
+
+  /* 支持从别处带参数进来：日期 / 金额 / 分类 / 信封 / 备注 */
+  var draft = {
+    date: UI.qs('date') || S.today,
+    amount: UI.qsNum('amount') != null ? UI.qsNum('amount') : '',
+    catId: UI.qs('catId') || 'c-food-main',
+    envelope: UI.qs('envelope') || '',
+    note: UI.qs('note') || '',
+    time: Store.nowHM(),
+    cycleKey: ''            // 发薪日归属：为空表示按日期自动归属
+  };
+  /* 第 8 节：从编辑页「已经买了」跳过来时带了排表项 id，
+     相当于已经确认的匹配 —— 保存时移除该项并用实际金额写已买记录。
+     这和「排表匹配检查确认」走完全相同的那段代码，两条路径合成一条。 */
+  var fromPlanId = UI.qs('fromPlanId') || '';
+  var fromPlanItem = null;
+  if (fromPlanId) {
+    var list = S.planItems || [];
+    for (var fi = 0; fi < list.length; fi++) if (list[fi].id === fromPlanId) fromPlanItem = list[fi];
+  }
+  if (!draft.envelope) draft.envelope = Calc.defaultEnvelope(S, draft.catId, { cycle: cycle, env: env });
+
+  /* 发薪日当天的支出归属（第 12 节）：日期等于某个发薪日才出现二选一 */
+  var attrib = Calc.paydayAttribution(S, draft.date, draft.time);
+  if (attrib.isPayday && !draft.cycleKey) draft.cycleKey = attrib.defaultCycleKey;
+
+  var body = document.getElementById('sheet');
+
+  /* 排表匹配检查的当前状态：命中时先问，确认了才保存 */
+  var match = { hidden: true, result: null, answer: null, removeId: '' };
+
+  function refreshMatch() {
+    /* 已经从「已经买了」确认过匹配时，不用再问 */
+    if (fromPlanItem) {
+      match.result = { applies: true, hit: null, candidates: [] };
+      match.hidden = true;
+      match.answer = 'confirmed';
+      match.removeId = fromPlanItem.id;
+      return;
+    }
+    match.result = Calc.planMatchCheck(S, draft);
+    match.hidden = !match.result.applies || !match.result.candidates.length;
+    match.answer = null;
+    match.removeId = '';
+  }
+  refreshMatch();
+
+  /** 保存前若有匹配检查没答完，先弹出来问 */
+  function ensureMatchAnswered() {
+    if (match.hidden) return true;
+    if (match.answer) return true;
+    render();
+    UI.toast('先确认这笔是不是排表里的项目');
+    return false;
+  }
+
+  function counterText(catId) {
+    var cat = Calc.findCategory(S, catId);
+    var n = Calc.categoryCounter(S, catId, cycle.key);
+    if (cat.name === '外卖（计次）') {
+      return env.takeout.leftCount <= 0
+        ? '外卖 · 剩 0 次 · 本次从自由支配出'
+        : '外卖 · 剩 ' + env.takeout.leftCount + ' 次 · 第 ' + n + ' 次';
+    }
+    if (cat.name === '打车（计次）') {
+      return env.taxi.leftCount <= 0
+        ? '打车 · 剩 0 次 · 本次从自由支配出'
+        : '打车 · 剩 ' + env.taxi.leftCount + ' 次 · 第 ' + n + ' 次';
+    }
+    return cat.name;
+  }
+
+  function render() {
+    S = Store.state();
+    env = Calc.envelopeState(S, cycle);
+
+    var cat = Calc.findCategory(S, draft.catId);
+    var cat1Html = S.categories.map(function (g) {
+      var on = g.id === cat.parentId;
+      return '<button type="button" class="chip" data-cat1="' + g.id + '" aria-pressed="' + on + '">' + UI.esc(g.name) + '</button>';
+    }).join('');
+    var cat2Html = (function () {
+      var g = null;
+      S.categories.forEach(function (x) { if (x.id === cat.parentId) g = x; });
+      if (!g) return '<div class="hint">这个分类已被删掉</div>';
+      return g.children.map(function (c) {
+        return '<button type="button" class="chip" data-cat="' + c.id + '" aria-pressed="' + (c.id === draft.catId) + '">' +
+          UI.esc(counterText(c.id)) + '</button>';
+      }).join('');
+    })();
+
+    var ENV_LABEL = { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
+    var envHtml = ['free', 'food', 'other', 'taxi', 'sub'].map(function (k) {
+      return '<button type="button" class="chip" data-env="' + k + '" aria-pressed="' + (draft.envelope === k) + '">' +
+        ENV_LABEL[k] + '</button>';
+    }).join('');
+
+    /* 记下后的影响：只有出钱信封是自由支配时才显示（规格第 6 节） */
+    var impact = Calc.impactOfEntry(S, {
+      amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date, id: '__preview__'
+    });
+    var impactHtml = '';
+    if (draft.envelope === 'free' && Number(draft.amount) > 0 && impact.applies) {
+      impactHtml = '<div class="callout callout--warn">' +
+        '<span class="t">记下后的影响</span><span>' + UI.esc(impact.text) + '</span></div>';
+    }
+
+    /* 排表匹配检查（第 6 节）：只在自由支配时检查，避免同一笔钱算两次 */
+    var matchHtml = '';
+    if (!match.hidden) {
+      var mc = match.result;
+      var hit = mc && mc.hit;
+      var title = hit ? ('这笔是不是排表里的「' + UI.esc(hit.name) + '」？') : '这笔对应排表里的哪一项？';
+      matchHtml = '<div class="callout callout--warn" id="matchBox">' +
+        '<span class="t">' + title + '</span>' +
+        (hit ? '<span>判断依据：' + hit.reason +
+          (hit.nameHit ? '（共同词 ' + hit.runLen + ' 字）' : '（差 ¥' + Calc.num(hit.amountDiff) + '）') + '</span>' : '<span></span>') +
+        '<div class="chips" style="margin-top:8px">' +
+          (mc.candidates.map(function (c) {
+            return '<button type="button" class="chip" data-match-pick="' + c.id + '">' + UI.esc(c.name) + '</button>';
+          }).join('')) +
+          '<button type="button" class="chip" data-match="no">不是</button>' +
+        '</div>' +
+        '<div class="hint">确认后该项会从排表移除，以实际金额为准。</div>' +
+        '</div>';
+    }
+
+    /* 发薪日归属二选一（第 12 节） */
+    var attribHtml = '';
+    if (attrib.isPayday) {
+      attribHtml = '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
+        '<span class="card-label">这笔属于</span>' +
+        '<div class="chips">' + attrib.options.map(function (o) {
+          return '<button type="button" class="chip" data-cyclekey="' + o.key + '" aria-pressed="' + (draft.cycleKey === o.key) + '">' +
+            UI.esc(o.label) + '</button>';
+        }).join('') + '</div>' +
+        '<div class="hint">发薪日当天的账默认算上一周期；想算进新周期就改选。</div>' +
+        '</div>';
+    }
+
+    body.innerHTML =
+      '<div class="sheet-grip"></div>' +
+      '<div class="topbar topbar--center">' +
+        '<h2>记一笔</h2>' +
+        '<a class="icon-btn icon-btn--flat" href="' + UI.url('flow.html') + '?date=' + draft.date + '" aria-label="关闭">' + UI.icon('close', 18) + '</a>' +
+      '</div>' +
+
+      '<div class="field">' +
+        '<label for="amount">金额</label>' +
+        '<div class="amount-row"><span class="cur">¥</span>' +
+        '<input id="amount" inputmode="decimal" value="' + (draft.amount === '' ? '' : draft.amount) + '" placeholder="0.00"></div>' +
+      '</div>' +
+
+      '<div class="row-between">' +
+        '<span class="card-label">日期</span>' +
+        '<button type="button" class="btn btn--muted btn--sm" id="pickDate">' + Calc.mdLabel(draft.date) + ' ' + Calc.weekdayCN(draft.date) +
+          UI.icon('down', 14) + '</button>' +
+      '</div>' +
+
+      '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
+        '<span class="card-label">分类</span>' +
+        '<div class="chips">' + cat1Html + '</div>' +
+        '<div class="chips chips--box chips--sub">' + cat2Html + '</div>' +
+      '</div>' +
+
+      '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
+        '<span class="card-label">出钱信封 · 按分类自动填，可改</span>' +
+        '<div class="chips">' + envHtml + '</div>' +
+        (draft.envelope === 'free' ? '<div class="hint">自由支配的钱从攒着出，会影响排表预测。</div>' : '') +
+      '</div>' +
+
+      '<div class="field">' +
+        '<label for="note">备注（可不填）</label>' +
+        '<input id="note" class="input" value="' + UI.esc(draft.note) + '" placeholder="比如 食堂午饭">' +
+      '</div>' +
+
+      matchHtml +
+
+      impactHtml +
+
+      attribHtml +
+
+      '<div class="sheet-actions">' +
+        '<button type="button" class="btn btn--lg btn--block" id="save">保存</button>' +
+      '</div>';
+
+    /* 交互 */
+    UI.on(body, '#amount', 'input', function (el) {
+      draft.amount = el.value === '' ? '' : Number(el.value);
+      refreshMatch();
+      var im = Calc.impactOfEntry(S, {
+        amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date, id: '__preview__'
+      });
+      var box = body.querySelector('.callout--warn span:last-child');
+      var t = body.querySelector('.callout--warn .t');
+      if (draft.envelope === 'free' && Number(draft.amount) > 0 && im.applies) {
+        if (!t) render();
+        else box.textContent = im.text;
+      } else if (t) {
+        t.parentNode.remove();
+      }
+    });
+    UI.on(body, '[data-cat]', 'click', function (el) {
+      draft.catId = el.getAttribute('data-cat');
+      draft.envelope = Calc.defaultEnvelope(S, draft.catId, { cycle: cycle, env: env });
+      refreshMatch();
+      render();
+    });
+    UI.on(body, '[data-cat1]', 'click', function (el) {
+      var gid = el.getAttribute('data-cat1');
+      S.categories.forEach(function (g) {
+        if (g.id === gid && g.children.length) {
+          draft.catId = g.children[0].id;
+          draft.envelope = Calc.defaultEnvelope(S, draft.catId, { cycle: cycle, env: env });
+        }
+      });
+      refreshMatch();
+      render();
+    });
+    UI.on(body, '[data-env]', 'click', function (el) {
+      draft.envelope = el.getAttribute('data-env');
+      refreshMatch();
+      render();
+    });
+    UI.on(body, '#note', 'input', function (el) {
+      draft.note = el.value;
+      refreshMatch();
+    });
+    UI.on(body, '[data-match]', 'click', function (el) {
+      if (el.getAttribute('data-match') === 'no') { match.answer = 'no'; match.removeId = ''; render(); return; }
+      match.answer = 'yes'; match.removeId = el.getAttribute('data-match-pick'); render();
+    });
+    UI.on(body, '[data-cyclekey]', 'click', function (el) {
+      draft.cycleKey = el.getAttribute('data-cyclekey');
+      render();
+    });
+    UI.on(body, '#pickDate', 'click', function () {
+      var inp = document.createElement('input');
+      inp.type = 'date'; inp.value = draft.date;
+      /* 第 6 节：日期不能晚于今天，流水只记已经发生的花费 */
+      inp.max = Store.today();
+      inp.style.cssText = 'position:fixed;left:0;top:0;opacity:0;width:100%;height:100%;z-index:99';
+      inp.onchange = function () {
+        draft.date = inp.value;
+        /* 选了未来的日期就拉回今天 */
+        if (draft.date > Store.today()) {
+          draft.date = Store.today();
+UI.toast('日期不能晚于今天，将来要花的钱放进排表');
+        }
+      /* 换了日期要重算归属默认值与匹配检查 */
+        attrib = Calc.paydayAttribution(S, draft.date, draft.time);
+        draft.cycleKey = attrib.isPayday ? attrib.defaultCycleKey : '';
+        refreshMatch();
+        render();
+      };
+      document.body.appendChild(inp);
+      inp.click();
+    });
+UI.on(body, '#save', 'click', function () {
+      var amt = Number(draft.amount);
+      if (!amt || amt <= 0) { UI.toast('先填金额'); return; }
+    /* 第 6 节：日期不能晚于今天（流水只记已经发生的花费） */
+  if (draft.date && draft.date > Store.today()) {
+     UI.toast('日期不能晚于今天，将来要花的钱放进排表');
+        draft.date = Store.today();
+        render();
+        return;
+      }
+if (!ensureMatchAnswered()) return;
+      /* 第 8 节：两条转支出的路径在这里合成一条 ——
+         「已经买了」（fromPlanId）和「排表匹配检查确认」都是保存时
+         用实际金额写已买记录 + 移除排表项。
+         用户在这之前关闭或取消，排表项还在、也不会有半截记录。 */
+      if (match.removeId && (match.answer === 'yes' || match.answer === 'confirmed')) {
+        var res = Store.addEntry(draft);
+        Store.removePlanItem(match.removeId, {
+          bought: true,
+          amount: amt,              // 实际金额，可能和排表里的估计金额不同
+          cycleKey: draft.cycleKey || Calc.deriveCycle(Store.state()).key,
+          date: draft.date,
+          entryId: res.entry.id     // 直接关联上，不用事后回填
+        });
+        location.href = UI.url('flow.html') + '?date=' + draft.date;
+        return;
+      }
+      Store.addEntry(draft);
+      location.href = UI.url('flow.html') + '?date=' + draft.date;
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
