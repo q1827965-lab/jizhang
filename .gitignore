@@ -1,0 +1,32 @@
+# ---------- 不上传 GitHub 的东西 ----------
+
+# 验收测试页：只在主人本机跑，不公开
+tests.html
+
+# 16.1 示例数据：只在主人本机用于测试，**含真实账目，绝不能公开**
+js/seed-16.1.js
+
+# 交付材料里的真实数据
+起始数据-16.1.json
+偏差清单.md
+使用说明.md
+tests-测试结果.md
+tr.json
+
+# 截图（交付材料里的，不公开）
+截图/
+
+# 依赖（本机跑截图脚本用）
+node_modules/
+package.json
+package-lock.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 系统
+*.log
