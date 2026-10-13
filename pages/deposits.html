@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>定期存单</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#2563EB">
+
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+<div class="phone phone--tall">
+  <div class="scroll scroll--tight" id="scroll"></div>
+</div>
+<script src="../js/png-data.js"></script>
+  <script src="../js/calc.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/ui.js"></script>
+<script>
+(function () {
+  var root = document.getElementById('scroll');
+
+  function render() {
+    var S = Store.state();
+    var deps = Calc.depositPlans(S);
+    var total = Calc.sum(deps, function (d) { return d.principal; });
+    var matured = deps.filter(function (d) { return d.dueDate <= S.today; });
+
+    var rows = deps.map(function (d) {
+      var isDue = d.dueDate <= S.today;
+      return '<section class="card card--tight">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span style="font-size:15px;font-weight:600">' + UI.money(d.principal) +
+            (isDue ? ' <span class="tag tag--warn">已到期</span>' : '') + '</span>' +
+          '<span class="hint">' + d.openDate + ' 开出</span>' +
+        '</div>' +
+        '<div class="hint">到期日 ' + d.dueDate + ' · 一年期 · 默认连本带息续存一年（不记利率）</div>' +
+        (isDue ? '<button type="button" class="btn btn--outline btn--sm" data-renew="' + d.id + '">填续存后的新金额</button>' : '') +
+        '<button type="button" class="btn btn--danger btn--sm" data-del="' + d.id + '">删除</button>' +
+        '</section>';
+    }).join('') || '<div class="hint">还没有存单。走一次发薪日流程，勾掉「工行 → 定期」就会自动生成。</div>';
+
+    root.innerHTML =
+      '<div class="topbar topbar--center">' +
+        '<a class="icon-btn" href="' + UI.url('more.html') + '" aria-label="返回">' + UI.icon('left', 18) + '</a>' +
+        '<h2>定期存单</h2><span style="width:40px"></span>' +
+      '</div>' +
+
+      '<section class="card">' +
+        '<div class="row-between" style="align-items:baseline">' +
+          '<span class="section-title">合计本金</span>' +
+          '<span style="font-size:26px;font-weight:700">' + UI.money(total) + '</span>' +
+        '</div>' +
+        '<div class="hint">' + deps.length + ' 张 · 每周期一张一年期存单 · 不记利率</div>' +
+        (matured.length ? '<div class="callout callout--warn"><span class="t">' + matured.length +
+          ' 张已到期</span><span>到期默认连本带息续存一年，请填续存后的新金额。</span></div>' : '') +
+      '</section>' +
+
+      rows +
+
+      '<button type="button" class="btn btn--outline btn--block" id="add">＋ 手动加一张</button>';
+
+    UI.on(root, '#add', 'click', function () {
+      var a = prompt('本金', '1000');
+      if (!a) return;
+      Store.save(function (s) {
+        var next = JSON.parse(JSON.stringify(s));
+        next.deposits = next.deposits || [];
+        next.deposits.push(Calc.makeDeposit(next, Number(a), next.today));
+        next.accounts.deposit = Calc.round2(Calc.nz(next.accounts.deposit, 0) + Number(a));
+        return next;
+      });
+      render();
+    });
+    UI.on(root, '[data-renew]', 'click', function (el) {
+      var id = el.getAttribute('data-renew');
+      var a = prompt('续存后的新金额（连本带息）', '');
+      if (!a) return;
+      Store.save(function (s) {
+        var next = JSON.parse(JSON.stringify(s));
+        (next.deposits || []).forEach(function (d) {
+          if (d.id === id) {
+            next.accounts.deposit = Calc.round2(Calc.nz(next.accounts.deposit, 0) + (Number(a) - Calc.nz(d.principal, 0)));
+            d.principal = Calc.round2(Number(a));
+            d.openDate = next.today;
+            d.dueDate = Calc.addYears(next.today, 1);
+          }
+        });
+        return next;
+      });
+      render();
+      UI.toast('已续存一年');
+    });
+    UI.on(root, '[data-del]', 'click', function (el) {
+      if (!confirm('删除这张存单？')) return;
+      Store.removeById('deposits', el.getAttribute('data-del'));
+      render();
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
