@@ -45,7 +45,7 @@
     var ENV_LABEL = { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
     var rows = list.map(function (e) {
       var seq = Calc.occurrenceIndex(S, e);
-      var counted = (e.catName === '打车（计次）' || e.catName === '外卖（计次）');
+      var counted = e.amount > 0 && (e.catName === '打车（计次）' || e.catName === '外卖（计次）');
       var impact = '';
       if (e.envelope === 'free') {
         var im = Calc.impactOfEntry(S, { amount: e.amount, catId: e.catId, envelope: 'free', id: '__none__' });
@@ -55,11 +55,13 @@
         '<div class="flow-item__t">' + UI.esc(e.time) + '</div>' +
         '<div class="flow-item__b">' +
           '<div class="flow-item__n">' + UI.esc(e.catName) +
+            (e.auto ? ' <span class="tag">自动</span>' : '') +
             (counted ? ' · 第 ' + seq + ' 次' : '') +
             (e.note ? ' · ' + UI.esc(e.note) : '') + '</div>' +
           '<div class="flow-item__s">' + UI.esc(e.cat1) + ' · 出钱：' + (ENV_LABEL[e.envelope] || e.envelope) + impact + '</div>' +
         '</div>' +
         '<div class="flow-item__a">' + UI.signed(e.amount) + '</div>' +
+        '<a class="item-row__edit" href="review-entry.html?id=' + encodeURIComponent(e.id) + '" aria-label="' + (e.pending ? '拆分待核对' : '编辑流水') + '">' + UI.icon('edit', 14) + '</a>' +
         '<button type="button" class="item-row__edit" data-del="' + e.id + '" aria-label="删除">' + UI.icon('close', 14) + '</button>' +
         '</div>';
     }).join('');

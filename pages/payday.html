@@ -25,7 +25,8 @@
   var input = {
     salary: null,
     abcActual: null,           // 第 12 节：默认留空，用户照真实账户填
-    cangzheActual: null,
+    yuebaoActual: null,
+    cmbDebt: null,
     paydayDate: S.today
   };
   /* 演示用：?fill=1 时预填实发工资和两个余额（真实使用时输入框默认留空）。
@@ -35,7 +36,8 @@
     if (!fill) return;
     input.salary = (fill === 'short') ? 1000 : 9000;
     input.abcActual = S.accounts.abc;
-    input.cangzheActual = S.accounts.cangzhe;
+    input.yuebaoActual = S.accounts.yuebao;
+    input.cmbDebt = S.cmbDebt || 0;
   })();
 
   var done = {};
@@ -45,10 +47,10 @@
     S = Store.state();
     var plan = Calc.paydayPlan(S, input);
     var review = Calc.buildReview(S, cycle.key);
-    var allDone = plan.steps.every(function (s) { return done[s.id]; });
+    var allDone = plan.steps.every(function (s) { return s.amount === 0 || done[s.id]; });
 
 var stepsHtml = plan.steps.map(function (s) {
-   var checked = !!done[s.id];
+   var checked = s.amount === 0 || !!done[s.id];
       /* 第 12 节：只有应急金和目标的欠额会顺延；定期是「剩下的全部」，没有欠额 */
       var lack = s.shortfall > 0
         ? '<span class="tag tag--warn">差额 ' + UI.num(s.shortfall) + ' 顺延</span>' : '';
@@ -65,7 +67,7 @@ var stepsHtml = plan.steps.map(function (s) {
             '<span style="font-size:15px;font-weight:700">' + UI.money(s.amount) + '</span>' + lack +
           '</div>' +
         '</div>' +
-        '<button type="button" class="switch" role="switch" data-step="' + s.id + '" aria-checked="' + (checked ? 'true' : 'false') + '"><span></span></button>' +
+        '<button type="button" class="switch" role="switch" data-step="' + s.id + '"' + (s.amount === 0 ? ' disabled' : '') + ' aria-checked="' + (checked ? 'true' : 'false') + '"><span></span></button>' +
         '</div>';
     }).join('');
 
@@ -86,7 +88,7 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
       '</div>' +
 
 '<section class="card">' +
-        '<div class="section-title">1 · 填工资和两个账户的实际余额</div>' +
+        '<div class="section-title">1 · 填工资、实际余额和招行总欠款</div>' +
     '<div class="grid2">' +
           '<div class="field"><label for="salary">实发工资<span style="color:var(--red,#DC2626)"> *</span></label>' +
           '<input id="salary" class="input input--num" inputmode="decimal" value="' + (input.salary != null ? input.salary : '') + '" placeholder="必填"></div>' +
@@ -96,24 +98,25 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
             '<input id="abc" class="input input--num" inputmode="decimal" value="' +
           (input.abcActual != null ? input.abcActual : '') + '" placeholder="应有 ' + UI.num(recon.expectedAbc) + '"></div>' +
         '</div>' +
-        '<div class="field"><label for="cang">攒着实际余额</label>' +
+        '<div class="field"><label for="cang">余额宝实际余额</label>' +
        '<input id="cang" class="input input--num" inputmode="decimal" value="' +
-      (input.cangzheActual != null ? input.cangzheActual : '') + '" placeholder="应有 ' + UI.num(recon.expectedCangzhe) + '"></div>' +
+      (input.yuebaoActual != null ? input.yuebaoActual : '') + '" placeholder="应有 ' + UI.num(recon.expectedCangzhe) + '"></div>' +
+        '<div class="field"><label for="cmbDebt">招行总欠款（已出账 + 未出账，无欠款填 0）</label><input id="cmbDebt" class="input input--num" inputmode="decimal" value="' + (input.cmbDebt != null ? input.cmbDebt : '') + '" placeholder="招行 App 首页的数字"></div>' +
         (salaryMissing
           ? '<div class="callout callout--warn"><span class="t">实发工资必填</span><span>没填实发工资不显示转账清单。</span></div>'
    : '') +
     '<div class="' + (reconBad ? 'callout callout--warn' : 'callout') + '">' +
           (reconBad
             ? '<span class="t">对不上：' + UI.money(recon.diff) + '</span>' +
-              '<span>记账算出「农行 + 攒着」应有 ' + UI.money(recon.expectedTotal) +
+              '<span>记账算出净余额应有 ' + UI.money(recon.expectedTotal) +
      '，实际 ' + UI.money(recon.actualTotal) + '</span>' +
-              '<span>把差额补记到具体信封，账就对了。</span>' +
-      '<button type="button" class="btn btn--sm btn--outline" id="fixAbc" style="margin-top:6px">把差额补记到吃饭信封</button>'
+              '<span>差额记为上一周期的待核对，复盘时再拆分分类。</span>' +
+      '<button type="button" class="btn btn--sm btn--outline" id="fixAbc" style="margin-top:6px">把差额记为待核对</button>'
             : (recon.ready
-              ? '<span>对账一致：「农行 + 攒着」合计都是 ' + UI.money(recon.actualTotal) + '</span>'
-              : '<span>对账比较的是「农行 + 攒着」的合计。记账算出农行应有 ' + UI.money(recon.expectedAbc) +
-                '、攒着应有 ' + UI.money(recon.expectedCangzhe) + '，合计 ' + UI.money(recon.expectedTotal) +
-        '。请照真实账户填上面两个框。</span>')) +
+              ? '<span>对账一致：「农行 − 招行总欠款 + 余额宝」合计 ' + UI.money(recon.actualTotal) + '</span>'
+              : '<span>对账比较的是「农行 − 招行总欠款 + 余额宝」。记账算出农行应有 ' + UI.money(recon.expectedAbc) +
+                '、余额宝应有 ' + UI.money(recon.expectedCangzhe) + '，合计 ' + UI.money(recon.expectedTotal) +
+        '。请照真实账户填写，未填写的金额不会按 0 处理。</span>')) +
  '</div>' +
       '</section>' +
 
@@ -152,6 +155,7 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
       var parts = [];
       if (emLack > 0) parts.push('应急金欠 ' + UI.money(emLack));
       if (goalLack > 0) parts.push('目标账户欠 ' + UI.money(goalLack));
+      if (plan.steps[4].shortfall > 0) parts.push('周转金欠 ' + UI.money(plan.steps[4].shortfall));
       if (parts.length) {
         lines.push('<span>' + parts.join('、') + '，顺延到下个发薪日。</span>');
       }
@@ -160,16 +164,16 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
         : '';
     })() +
         '<div class="hint">共转出 ' + UI.money(plan.totalOut) +
-          (plan.carriedOver > 0 ? ' · 应急金和目标欠额顺延 ' + UI.money(plan.carriedOver) : '') + '</div>' +
+          (plan.carriedOver > 0 ? ' · 应急金、目标和周转欠额顺延 ' + UI.money(plan.carriedOver) : '') + '</div>' +
       '</section>') +
 
       '<section class="card">' +
         '<div class="section-title">4 · 完成新周期</div>' +
       '<div class="hint">全部勾完会：生成定期存单、记下本次发薪日期、各信封额度重置、开始新周期。</div>' +
         '<button type="button" class="btn btn--lg btn--block" id="finish"' +
-    ((allDone && !salaryMissing) ? '' : ' disabled') + '>' +
+    ((allDone && !salaryMissing && recon.ready && input.cmbDebt != null) ? '' : ' disabled') + '>' +
  (salaryMissing ? '先填实发工资'
-          : (allDone ? '完成，开始新周期' : '还有 ' + plan.steps.filter(function (s) { return !done[s.id]; }).length + ' 笔没勾')) + '</button>' +
+          : (!recon.ready || input.cmbDebt == null ? '先填写实际余额和招行总欠款' : (allDone ? '完成，开始新周期' : '还有 ' + plan.steps.filter(function (s) { return s.amount > 0 && !done[s.id]; }).length + ' 笔没勾'))) + '</button>' +
       '</section>' +
 
       '<section class="card">' +
@@ -181,19 +185,18 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
 /* 交互 */
     UI.on(root, '#salary', 'input', function (el) { input.salary = el.value === '' ? null : Number(el.value); });
     UI.on(root, '#abc', 'input', function (el) { input.abcActual = el.value === '' ? null : Number(el.value); });
-    UI.on(root, '#cang', 'input', function (el) { input.cangzheActual = el.value === '' ? null : Number(el.value); });
+    UI.on(root, '#cang', 'input', function (el) { input.yuebaoActual = el.value === '' ? null : Number(el.value); });
+    UI.on(root, '#cmbDebt', 'input', function (el) { input.cmbDebt = el.value === '' ? null : Number(el.value); });
   /* 失焦或回车才重渲染，避免每敲一个数字就丢焦点 */
     UI.on(root, '#salary', 'change', function () { render(); });
     UI.on(root, '#abc', 'change', function () { render(); });
     UI.on(root, '#cang', 'change', function () { render(); });
+    UI.on(root, '#cmbDebt', 'change', function () { done = {}; render(); });
     UI.on(root, '#fixAbc', 'click', function () {
-  var diff = recon.diff;
-      if (!diff || Math.abs(diff) < 0.005) return;
-      Store.addEntry({ amount: Math.abs(diff), catId: 'c-food-main', envelope: 'food', date: S.today, note: '对账差额补记' });
-      // 差额补到吃饭（农行），所以农行实际余额朝差额方向挪
-    input.abcActual = Calc.round2(Calc.nz(input.abcActual, 0) - diff);
+      try { Store.recordPaydayDifference(input); } catch (e) { UI.toast(e.message); return; }
+      if (!Store.lastWriteOk()) return;
       render();
-      UI.toast('已补记，账对上了');
+      UI.toast('已记待核对，复盘时可拆分');
     });
     UI.on(root, '[data-step]', 'click', function (el) {
       var id = el.getAttribute('data-step');
@@ -202,10 +205,16 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
     });
     UI.on(root, '#finish', 'click', function () {
       if (!confirm('完成发薪日流程？各信封额度会重置，开始新周期。')) return;
-      var plan2 = Calc.paydayPlan(Store.state(), input);
-      Store.write(Calc.applyPayday(Store.state(), plan2, { paydayDate: input.paydayDate }));
-      render();
-      UI.toast('新周期开始完了，记得导出给随记');
+      try {
+        if ([input.salary, input.abcActual, input.yuebaoActual, input.cmbDebt].some(function (v) { return v == null || !isFinite(v) || v < 0; })) throw new Error('请填写有效的工资、余额和欠款');
+        if (Store.state().lastPayday === input.paydayDate) throw new Error('今天已完成发薪日流程');
+        Store.recordPaydayDifference(input);
+        if (!Store.lastWriteOk()) return;
+        var plan2 = Calc.paydayPlan(Store.state(), input);
+        Store.write(Calc.applyPayday(Store.state(), plan2, input));
+        if (!Store.lastWriteOk()) return;
+        location.href = UI.url('home.html');
+      } catch (e) { UI.toast(e.message); }
     });
     UI.on(root, '#export', 'click', function () {
       var S2 = Store.state();

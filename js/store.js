@@ -16,7 +16,7 @@ var Store = (function () {
   var KEY = 'ledger-v1';           // 正式版数据键
   var BACKUP_KEY = 'ledger-v1-auto-backup';   // 自动备份槽（每次结构升级覆盖一次）
   var BACKUP_HISTORY_KEY = 'ledger-v1-backups'; // 自动备份历史（最多存 5 份）
-  var SCHEMA_VERSION = 2;          // 数据结构版本号
+  var SCHEMA_VERSION = 3;          // 数据结构版本号
 
   /* ---------- 今天的日期 ---------- */
   function realToday() {
@@ -65,9 +65,17 @@ var Store = (function () {
       taxi: { price: 25, surplus: 4, unassignedWeekNightShifts: 3 },
       takeout: { perCycle: 4 },
       warn: { mealDaily: 25, mobilityOther: [80, 100] },
-      plan: { floor: 200, abcBuffer: 350, worstPaydayFallback: 15, coldThreshold: 255, coldDays: 1 },
+      plan: { floor: 200, abcBuffer: 350, worstPaydayFallback: 15 },
       emergency: { target: 10000, perCycle: 500 },
       review: { overspendCycles: 2, bigSurplusPct: 30 },
+      /* 假期周期（第五轮）：哪些周期是假期周期（2 月、8 月工资到账的那种），
+         假期周期预计实发多少，平常周期每笔往「攒着（假期周转）」拨多少 */
+      holiday: { cycles: ['03', '09'], expectedSalary: 1600, transferPerCycle: 300 },
+      /* 订阅清单（第五轮）：到扣款日自动记一笔带标记的流水。
+         项：{ id, name, amount, day, month（年付填 1-12，月付留空）, envelope, note } */
+      subscriptions: [],
+      /* 招行信用卡（第五轮）：每月这天从农行自动全额扣款，前一天提醒 */
+      cmb: { dueDay: 17 },
       calendar: { teachingWeek: 5, teachingWeekAnchor: '2026-10-05' }
     };
   }
@@ -100,13 +108,19 @@ var Store = (function () {
       createdAt: t,
       today: t,
       accounts: {
-        cangzhe: 0,     // 支付宝「攒着」
+        yuebao: 0,     // 支付宝「余额宝」（原「攒着」，第五轮改名）
         abc: 0,         // 农行
         icbc: 0,        // 工行，工资卡
         goal: 0,        // 目标账户
+        holiday: 0,     // 攒着（假期周转）：专款补假期周期缺口，不算安全可花
         deposit: 0      // 定期
       },
       cycleAbcOpening: 0,
+      cycleCmbOpening: 0,
+      cmbDebt: 0,       // 招行信用卡总欠款（发薪日对账时填）
+      paydayCarry: { emergency: 0, goal: 0, holiday: 0 },
+      subscriptionOccurrences: [],
+      transfers: [],
       lastPayday: '',
       lastPaydayFlowAt: '',
       paydayRecords: [],
@@ -164,17 +178,15 @@ var Store = (function () {
     try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
     if (!parsed || typeof parsed !== 'object') {
       // 解析失败：数据不能丢，原样存进备份槽再开新的
-      pushAutoBackup(raw, 0);
-      lastUpgrade = { from: '无法解析', to: SCHEMA_VERSION, at: today(), autoBackup: true };
-      cache = initialState();
-      write(cache);
-      return cache;
+      requireBackup(raw, 0);
+      throw new Error('原账目文件无法解析，已保留原始数据和备份，没有用空账目覆盖。请导出原始账目后核对。');
     }
 
     var v = (typeof parsed.version === 'number') ? parsed.version : 0;
+    if (v > SCHEMA_VERSION) throw new Error('账目版本比当前 App 新，已停止读取和覆盖，请使用更新版本的 App。');
     if (v < SCHEMA_VERSION) {
       /* 旧数据：先自动备份原始 JSON，再升级 */
-      pushAutoBackup(raw, v);
+      requireBackup(raw, v);
       var upgraded = upgrade(parsed, v);
       lastUpgrade = { from: v, to: SCHEMA_VERSION, at: today(), autoBackup: true };
       cache = upgraded;
@@ -189,7 +201,7 @@ var Store = (function () {
   /** 结构升级：从任意旧版本逐级升到当前版本。每升一级都要补齐该级新增的字段。 */
   function upgrade(s, fromV) {
     var out = fill(Calc.clone(s));
-    // 逐级升级：以后 SCHEMA_VERSION 涨到 3，就在 for 循环里加 i === 2 的分支
+    // 逐级升级：SCHEMA_VERSION 涨到 4 时，在 for 循环里加 i === 3 的分支
     for (var i = fromV + 1; i <= SCHEMA_VERSION; i++) {
       if (i === 2) {
         // v1 → v2：已买记录从「只存条件项」扩展到存排表项完整快照；新增存档式备份
@@ -205,9 +217,64 @@ var Store = (function () {
           return rec;
         });
       }
+      if (i === 3) {
+        /* v2 → v3（第五轮）：
+           1) 「攒着」改名「余额宝」：余额、对账期初、流水里显式记的账户名，全部迁到新名字；
+           2) 新增「攒着（假期周转）」账户、招行总欠款、假期周期设置、订阅清单（fill 已补默认值）；
+           3) 去掉冷处理：还在冷处理的项转成条件项，冷处理门槛/天数设置清掉。 */
+        out.accounts = out.accounts || {};
+        // 余额：v2 数据只有 cangzhe；fill 之后 yuebao 是初始值 0，把旧余额并进去
+        if (typeof out.accounts.cangzhe === 'number') {
+          out.accounts.yuebao = Calc.round2(Calc.nz(out.accounts.yuebao, 0) + out.accounts.cangzhe);
+        }
+        delete out.accounts.cangzhe;
+        out.accounts.holiday = Calc.nz(out.accounts.holiday, 0);
+        // 对账期初：cangzheOpening → yuebaoOpening
+        if (typeof out.cangzheOpening === 'number') {
+          out.yuebaoOpening = Calc.round2(Calc.nz(out.yuebaoOpening, 0) + out.cangzheOpening);
+        }
+        delete out.cangzheOpening;
+        out.cmbDebt = Calc.nz(out.cmbDebt, 0);
+        // 流水里显式记了旧账户名的（待核对/订阅那类），改成新名字
+        (out.entries || []).forEach(function (e) {
+          if (e && e.account === 'cangzhe') e.account = 'yuebao';
+        });
+        migrateAccountReferences(out);
+        // 冷处理取消：冷处理中的项转成条件项（等着本身就是冷静）
+        (out.planItems || []).forEach(function (p) {
+          if (!p) return;
+          if (p.type === 'cool' || p.cool || p.coolUntil) {
+            p.type = 'conditional';
+            delete p.cool;
+            delete p.coolUntil;
+          }
+        });
+        if (out.settings && out.settings.plan) {
+          delete out.settings.plan.coldThreshold;
+          delete out.settings.plan.coldDays;
+        }
+      }
     }
     out.version = SCHEMA_VERSION;
     return out;
+  }
+
+  function migrateAccountReferences(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    Object.keys(obj).forEach(function (key) {
+      var value = obj[key];
+      if (value && typeof value === 'object') migrateAccountReferences(value);
+      else if (typeof value === 'string' && /account|from|to|direction|title|detail|name/i.test(key)) {
+        if (value === 'cangzhe') obj[key] = 'yuebao';
+        else if (value === '攒着') obj[key] = '余额宝';
+        else if (/account|from|to|direction|title|detail/i.test(key)) obj[key] = value.replace(/攒着(?!（假期周转）)/g, '余额宝');
+      }
+    });
+    if (obj.type === 'cool' || obj.cool || obj.coolUntil) {
+      obj.type = 'conditional';
+      delete obj.cool;
+      delete obj.coolUntil;
+    }
   }
 
   /** 补齐缺省字段，避免页面读到 undefined。不改已有数据。 */
@@ -222,6 +289,13 @@ var Store = (function () {
     out.settings.plan = Object.assign({}, base.settings.plan, (s.settings || {}).plan || {});
     out.settings.emergency = Object.assign({}, base.settings.emergency, (s.settings || {}).emergency || {});
     out.settings.review = Object.assign({}, base.settings.review, (s.settings || {}).review || {});
+    out.settings.holiday = Object.assign({}, base.settings.holiday, (s.settings || {}).holiday || {});
+    var subsIn = (s.settings || {}).subscriptions;
+    out.settings.subscriptions = Array.isArray(subsIn) ? subsIn : base.settings.subscriptions;
+    out.settings.cmb = Object.assign({}, base.settings.cmb, (s.settings || {}).cmb || {});
+    out.paydayCarry = Object.assign({}, base.paydayCarry, s.paydayCarry || {});
+    out.subscriptionOccurrences = Array.isArray(s.subscriptionOccurrences) ? s.subscriptionOccurrences : [];
+    out.transfers = Array.isArray(s.transfers) ? s.transfers : [];
     out.settings.calendar = Object.assign({}, base.settings.calendar, (s.settings || {}).calendar || {});
     out.accounts = Object.assign({}, base.accounts, s.accounts || {});
     out.emergency = Object.assign({}, base.emergency, s.emergency || {});
@@ -235,7 +309,8 @@ var Store = (function () {
     out.deposits = s.deposits || [];
     out.paydayRecords = s.paydayRecords || [];
     out.boughtLog = s.boughtLog || [];
-    out.cangzheOpening = (typeof s.cangzheOpening === 'number') ? s.cangzheOpening : Calc.nz(out.accounts.cangzhe, 0);
+    out.yuebaoOpening = (typeof s.yuebaoOpening === 'number') ? s.yuebaoOpening : Calc.nz(out.accounts.yuebao, 0);
+    out.cmbDebt = Calc.nz(s.cmbDebt, 0);
     out.lastPayday = s.lastPayday || '';
     out.lastPaydayFlowAt = s.lastPaydayFlowAt || '';
     out.cycleHistory = s.cycleHistory || [];
@@ -254,6 +329,7 @@ var Store = (function () {
   /* ---------- 自动备份槽（第 8 条：改动结构前先把旧数据存一份） ---------- */
 
   function pushAutoBackup(rawText, fromVersion) {
+    var saved = false;
     try {
       localStorage.setItem(BACKUP_KEY, JSON.stringify({
         at: new Date().toISOString(),
@@ -261,7 +337,8 @@ var Store = (function () {
         toVersion: SCHEMA_VERSION,
         text: rawText
       }));
-    } catch (e) { /* 存不下就跳过，不能因为备份失败而挡住启动 */ }
+      saved = true;
+    } catch (e) { /* 再尝试历史槽；两处都失败时禁止升级覆盖 */ }
     // 历史里再存一份，最多 5 份
     try {
       var hist = JSON.parse(localStorage.getItem(BACKUP_HISTORY_KEY) || '[]');
@@ -269,14 +346,25 @@ var Store = (function () {
       hist.unshift({ at: new Date().toISOString(), fromVersion: fromVersion, text: rawText });
       while (hist.length > 5) hist.pop();
       localStorage.setItem(BACKUP_HISTORY_KEY, JSON.stringify(hist));
+      saved = true;
     } catch (e) { /* noop */ }
+    return saved;
+  }
+
+  function requireBackup(text, version) {
+    if (!pushAutoBackup(text, version)) {
+      throw new Error('升级前备份未能保存，已停止升级，原账目未覆盖。请先导出原始账目并腾出存储空间后重试。');
+    }
   }
 
   /** 自动备份列表（给「更多」页展示，用户可以下载） */
   function autoBackups() {
     try {
       var hist = JSON.parse(localStorage.getItem(BACKUP_HISTORY_KEY) || '[]');
-      return Array.isArray(hist) ? hist : [];
+      if (!Array.isArray(hist)) hist = [];
+      var slot = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null');
+      if (slot && !hist.some(function (b) { return b.text === slot.text; })) hist.unshift(slot);
+      return hist;
     } catch (e) { return []; }
   }
 
@@ -299,12 +387,8 @@ var Store = (function () {
       lastWriteOkFlag = true;
       return s;
     } catch (e1) {
-      // 多半是存储满了：先裁掉备份历史再试一次
+      // 再试一次，但不删备份，写失败时保留磁盘旧账与当前内存修改。
       try {
-        var hist = JSON.parse(localStorage.getItem(BACKUP_HISTORY_KEY) || '[]');
-        if (Array.isArray(hist) && hist.length > 1) {
-          localStorage.setItem(BACKUP_HISTORY_KEY, JSON.stringify(hist.slice(0, 1)));
-        }
         rawSet(text);
         lastWriteOkFlag = true;
         return s;
@@ -332,12 +416,13 @@ var Store = (function () {
    * 新代码读到缺失的字段就会出错。
    */
   /** 导入和测试注入共用：旧版本先备份再升级，新版本补齐字段，然后写入。 */
-  function ingest(obj) {
+  function ingest(obj, rawText) {
     var data;
     var v = (obj && typeof obj.version === 'number') ? obj.version : 0;
+    if (v > SCHEMA_VERSION) throw new Error('账目版本比当前 App 新，不能导入后降级覆盖');
     if (v < SCHEMA_VERSION) {
       /* 旧版本数据：先自动备份原始内容，再升级 —— 和打开 App 时同一条路径 */
-      pushAutoBackup(JSON.stringify(obj), v);
+      requireBackup(rawText || JSON.stringify(obj), v);
       lastUpgrade = { from: v, to: SCHEMA_VERSION, at: today(), autoBackup: true };
       data = upgrade(obj, v);
     } else {
@@ -366,6 +451,7 @@ var Store = (function () {
   function reset() {
     try { localStorage.removeItem(KEY); } catch (e) { /* noop */ }
     cache = null;
+    pinnedToday = '';
     return read();
   }
 
@@ -375,6 +461,14 @@ var Store = (function () {
 
   function uid(prefix) {
     return (prefix || 'x') + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e4).toString(36);
+  }
+
+  function accountBalance(s, account) {
+    return account === 'jiaohang' ? Calc.nz(s.emergency.balance, 0) : Calc.nz(s.accounts[account], 0);
+  }
+  function changeAccount(s, account, delta) {
+    if (account === 'jiaohang') s.emergency.balance = Calc.round2(accountBalance(s, account) + delta);
+    else s.accounts[account] = Calc.round2(accountBalance(s, account) + delta);
   }
 
   /** 记一笔 */
@@ -393,6 +487,8 @@ var Store = (function () {
       catName: cat.name,
       cat1: cat.parent,
       envelope: envName,
+      /* 待核对那类流水带 account：按指定账户记，不按信封推 */
+      account: draft.account || undefined,
       note: draft.note || ''
     };
     /* 发薪日当天的归属由用户二选一决定（第 12 节）；没选就按日期自动归属 */
@@ -404,10 +500,10 @@ var Store = (function () {
     var next = Calc.clone(s);
     next.entries = next.entries || [];
     next.entries.push(entry);
-    // 账户同步：自由支配扣攒着，其余扣农行。已结束周期的账不动余额。
+    // 账户同步：待核对按 account，自由支配扣余额宝，其余扣农行。已结束周期的账不动余额。
     if (!entry.reviewOnly) {
-      if (entry.envelope === 'free') next.accounts.cangzhe = Calc.round2(Calc.nz(next.accounts.cangzhe, 0) - entry.amount);
-      else next.accounts.abc = Calc.round2(Calc.nz(next.accounts.abc, 0) - entry.amount);
+      var acc = draft.account || (entry.envelope === 'free' ? 'yuebao' : 'abc');
+      changeAccount(next, acc, -entry.amount);
     }
     return { state: write(next), entry: entry };
   }
@@ -424,9 +520,9 @@ var Store = (function () {
       if (found) {
         var k = found.cycleKey || Calc.cycleKeyForDate(s, found.date);
         // 同样是已结束周期的账，余额当初就没扣过，删掉也不用还
-        if (k === cycle.key) {
-          if (found.envelope === 'free') next.accounts.cangzhe = Calc.round2(Calc.nz(next.accounts.cangzhe, 0) + found.amount);
-          else next.accounts.abc = Calc.round2(Calc.nz(next.accounts.abc, 0) + found.amount);
+        if (k === cycle.key && !found.reviewOnly) {
+          var acc = found.account || (found.envelope === 'free' ? 'yuebao' : 'abc');
+          changeAccount(next, acc, found.amount);
         }
       }
       return next;
@@ -719,7 +815,7 @@ var Store = (function () {
         next.deposits.push(Calc.makeDeposit(next, plan.toDeposit, next.today));
         next.accounts.deposit = Calc.round2(Calc.nz(next.accounts.deposit, 0) + plan.toDeposit);
       }
-      if (plan.toCangzhe > 0) next.accounts.cangzhe = Calc.round2(Calc.nz(next.accounts.cangzhe, 0) + plan.toCangzhe);
+      if (plan.toYuebao > 0) next.accounts.yuebao = Calc.round2(Calc.nz(next.accounts.yuebao, 0) + plan.toYuebao);
       return next;
     });
   }
@@ -734,6 +830,212 @@ var Store = (function () {
       next.emergency.balance = Calc.round2(Calc.nz(next.emergency.balance, 0) - Calc.round2(amount));
       return next;
     });
+  }
+
+  /* ==================================================================
+   * 第五轮：卡内余额对账 / 待核对拆分 / 订阅自动入账
+   * ================================================================== */
+
+  /**
+   * 卡内余额对账（更多 → 账户余额）：把某个账户的实际余额填进来。
+   *  · 农行/余额宝：和 App 按流水算出的预期余额比，差额记一笔「待核对」流水
+   *    （实际比预期少 → 支出；实际比预期多 → 收入），然后把实际余额设为新基数。
+   *    期初不用手动改：差额已经由待核对流水体现，预期余额自动对上实际。
+   *  · 其他账户（工行/假期周转）：没有流水跟踪，直接改成实际余额。
+   * 返回 { state, account, actual, expected, diff, entry }。
+   */
+  function reconcileAccountBalance(account, actual) {
+    var s = read();
+    var cycle = Calc.deriveCycle(s);
+    if (!isFinite(Number(actual)) || Number(actual) < 0) throw new Error('实际余额须为不小于 0 的金额');
+    if (account !== 'jiaohang' && !Object.prototype.hasOwnProperty.call(s.accounts, account)) throw new Error('未知账户');
+    var actualN = Calc.round2(Number(actual));
+    var expected;
+    if (account === 'abc') expected = Calc.expectedAbcBalance(s, cycle.key);
+    else if (account === 'yuebao') expected = Calc.expectedYuebaoBalance(s, cycle.key);
+    else expected = accountBalance(s, account);
+    var diff = Calc.round2(expected - actualN);   // >0：钱少了，记支出；<0：钱多了，记收入
+    var entry = null;
+    var next = save(function (st) {
+      var n = Calc.clone(st);
+      if (Math.abs(diff) >= 0.005) {
+        entry = {
+          id: uid('e'),
+          date: n.today,
+          time: nowHM(),
+          amount: diff,
+          catId: 'c-pending',
+          catName: '待核对',
+          cat1: '对账',
+          envelope: 'pending',
+          account: account,
+          pending: true,
+          cycleKey: cycle.key,
+          note: '卡内余额对账：预期 ' + Calc.money(expected) + '，实际 ' + Calc.money(actualN)
+        };
+        n.entries = n.entries || [];
+        n.entries.push(entry);
+      }
+      n.accounts = n.accounts || {};
+      changeAccount(n, account, actualN - accountBalance(n, account));
+      return n;
+    });
+    return { state: next, account: account, actual: actualN, expected: expected, diff: diff, entry: entry };
+  }
+
+  function reconcileAccountBalances(values) {
+    var s = read(), cycle = Calc.deriveCycle(s), entries = [];
+    var n = Calc.clone(s);
+    Object.keys(values).forEach(function (account) {
+      var actual = Number(values[account]);
+      if (!isFinite(actual) || actual < 0) throw new Error('实际余额须为不小于 0 的金额');
+      if (account !== 'jiaohang' && !Object.prototype.hasOwnProperty.call(s.accounts, account)) throw new Error('未知账户');
+      var expected = account === 'abc' ? Calc.expectedAbcBalance(s, cycle.key) : account === 'yuebao' ? Calc.expectedYuebaoBalance(s, cycle.key) : accountBalance(s, account);
+      var diff = Calc.round2(expected - actual);
+      if (Math.abs(diff) >= 0.005) {
+        var entry = { id: uid('e'), date: s.today, time: nowHM(), amount: diff, catId: 'c-pending', catName: '待核对', cat1: '对账', envelope: 'pending', account: account, pending: true, cycleKey: cycle.key, note: '卡内余额对账：预期 ' + Calc.money(expected) + '，实际 ' + Calc.money(actual) };
+        entries.push(entry);
+        n.entries.push(entry);
+      }
+      changeAccount(n, account, Calc.round2(actual) - accountBalance(n, account));
+    });
+    return { state: write(n), entries: entries };
+  }
+
+  /**
+   * 待核对拆分（第五轮）：把一笔待核对流水拆成多笔正式流水，原条删除。
+   * parts: [{ amount, catId, envelope }]，金额合计必须和原条一致。
+   * 各分片沿用原条的日期和账户（account），pending 标记去掉，记 splitFrom 指向原条。
+   */
+  function splitPendingEntry(id, parts) {
+    var s = read();
+    var src = null;
+    for (var i = 0; i < (s.entries || []).length; i++) {
+      if (s.entries[i].id === id) { src = s.entries[i]; break; }
+    }
+    if (!src) throw new Error('找不到要拆分的待核对流水');
+    if (!src.pending) throw new Error('只能拆分「待核对」流水');
+    if (!Array.isArray(parts) || !parts.length || parts.some(function (p) {
+      return !isFinite(Number(p.amount)) || Number(p.amount) === 0 || Number(p.amount) * src.amount <= 0;
+    })) throw new Error('拆分金额须与原流水同为支出或收入，且大于 0');
+    var total = Calc.round2((parts || []).reduce(function (a, p) { return a + Calc.nz(p.amount, 0); }, 0));
+    if (Math.abs(total - Calc.nz(src.amount, 0)) > 0.005) {
+      throw new Error('拆分金额合计要和原金额一致（原 ' + Calc.money(src.amount) + '，拆出来 ' + Calc.money(total) + '）');
+    }
+    var cycle = Calc.deriveCycle(s);
+    var made = [];
+    var next = save(function (st) {
+      var n = Calc.clone(st);
+      // 原条删掉，它当时怎么动的余额就怎么退回去
+      var srcAcc = src.account || (src.envelope === 'free' ? 'yuebao' : 'abc');
+      var affectsBalance = !src.reviewOnly && (src.cycleKey || Calc.cycleKeyForDate(st, src.date)) === cycle.key;
+      if (affectsBalance) changeAccount(n, srcAcc, Calc.nz(src.amount, 0));
+      n.entries = (n.entries || []).filter(function (e) { return e.id !== id; });
+      (parts || []).forEach(function (p) {
+        var amt = Calc.round2(Calc.nz(p.amount, 0));
+        if (amt === 0) return;
+        var cat = Calc.findCategory(n, p.catId);
+        var envName = p.envelope || Calc.defaultEnvelope(n, p.catId, { cycle: cycle });
+        var rec = {
+          id: uid('e'),
+          date: src.date,
+          time: src.time || nowHM(),
+          amount: amt,
+          catId: cat.id,
+          catName: cat.name,
+          cat1: cat.parent,
+          envelope: envName,
+          account: src.account || undefined,
+          splitFrom: src.id,
+          cycleKey: src.cycleKey || Calc.cycleKeyForDate(st, src.date),
+          reviewOnly: !!src.reviewOnly,
+          note: p.note || src.note || ''
+        };
+        // 分片和原条同一个账户出钱；合计和原条相等，退回收支相抵
+        var acc = src.account || (envName === 'free' ? 'yuebao' : 'abc');
+        if (affectsBalance) changeAccount(n, acc, -amt);
+        made.push(rec);
+      });
+      n.entries = (n.entries || []).concat(made);
+      return n;
+    });
+    return { state: next, entries: made };
+  }
+
+  /**
+   * 订阅自动入账（第五轮）：今天该扣的订阅记成带标记的流水（auto / autoSubId）。
+   * 打开 App 时跑一次；记过的不重复记。用户可以改、可以删——就是普通流水。
+   */
+  function recordDueSubscriptions() {
+    var s = read();
+    var due = Calc.dueSubscriptions(s, s.today);
+    if (!due.length) return { state: s, recorded: [] };
+    var made = [];
+    var next = save(function (st) {
+      var n = Calc.clone(st);
+      due.forEach(function (d) {
+        var cat = Calc.findCategory(n, d.catId);
+        var rec = {
+          id: uid('e'),
+          date: d.date,
+          time: d.time,
+          amount: d.amount,
+          catId: cat.id,
+          catName: cat.name,
+          cat1: cat.parent,
+          envelope: d.envelope || 'sub',
+          auto: true,
+          autoSubId: d.autoSubId,
+          cycleKey: Calc.deriveCycle(n).key,
+          note: d.note || ''
+        };
+        n.entries = n.entries || [];
+        n.entries.push(rec);
+        // 订阅从农行扣（信封是「固定订阅」）
+        changeAccount(n, Calc.entryAccount(rec), -rec.amount);
+        n.subscriptionOccurrences = n.subscriptionOccurrences || [];
+        n.subscriptionOccurrences.push(d.autoSubId + ':' + d.date.slice(0, 7));
+        made.push(rec);
+      });
+      return n;
+    });
+    return { state: next, recorded: made };
+  }
+
+  function updateEntry(id, patch) {
+    return save(function (s) {
+      var n = Calc.clone(s), old = (n.entries || []).filter(function (e) { return e.id === id; })[0];
+      if (!old) throw new Error('找不到流水');
+      if (!isFinite(Number(patch.amount)) || Number(patch.amount) * old.amount <= 0) throw new Error('请输入有效金额');
+      var live = !old.reviewOnly && (old.cycleKey || Calc.cycleKeyForDate(s, old.date)) === Calc.deriveCycle(s).key;
+      if (live) changeAccount(n, Calc.entryAccount(old), old.amount);
+      var cat = Calc.findCategory(n, patch.catId || old.catId);
+      old.amount = Calc.round2(Number(patch.amount));
+      old.catId = cat.id; old.catName = cat.name; old.cat1 = cat.parent;
+      old.envelope = patch.envelope || old.envelope;
+      if (typeof patch.note === 'string') old.note = patch.note;
+      if (live) changeAccount(n, Calc.entryAccount(old), -old.amount);
+      return n;
+    });
+  }
+
+  function recordPaydayDifference(input) {
+    var s = read(), cycle = Calc.deriveCycle(s), rec = Calc.reconcileTotal(s, input);
+    if (!rec.ready) throw new Error('请填写农行、余额宝和招行总欠款');
+    if (rec.balanced) return { state: s, entry: null };
+    var entry = {
+      id: uid('e'), date: input.paydayDate || s.today, time: nowHM(),
+      amount: Calc.round2(-rec.diff), catId: 'c-pending', catName: '待核对', cat1: '对账',
+      envelope: 'pending', account: 'abc', pending: true, cycleKey: cycle.key,
+      note: '发薪日对账：农行 − 招行总欠款 + 余额宝，差额待核对'
+    };
+    var next = save(function (st) {
+      var n = Calc.clone(st);
+      n.entries.push(entry);
+      changeAccount(n, 'abc', -entry.amount);
+      return n;
+    });
+    return { state: next, entry: entry };
   }
 
   /** 设置页保存 */
@@ -793,6 +1095,8 @@ var Store = (function () {
     var goals = Array.isArray(data.goals) ? data.goals : [];
     var acc = data.accounts || {};
     var totalSpent = entries.reduce(function (a, e) { return a + (Number(e.amount) || 0); }, 0);
+    var pendingCount = entries.filter(function (e) { return e.pending; }).length;
+    var subs = (data.settings || {}).subscriptions;
     return {
       ok: true,
       data: data,
@@ -801,21 +1105,25 @@ var Store = (function () {
         exportedAt: data.exportedAt || data.lastExportAt || '',
         version: (typeof data.version === 'number') ? data.version : 0,
         entryCount: entries.length,
+        pendingCount: pendingCount,
         planCount: planItems.length,
         scheduledCount: planItems.filter(function (p) { return p.type === 'scheduled'; }).length,
         conditionalCount: planItems.filter(function (p) { return p.type === 'conditional'; }).length,
         boughtCount: Array.isArray(data.boughtLog) ? data.boughtLog.length : 0,
         depositCount: deposits.length,
         goalCount: goals.length,
+        subscriptionCount: Array.isArray(subs) ? subs.length : 0,
         calendarDays: Object.keys(data.calendar || {}).length,
         totalSpent: Math.round(totalSpent * 100) / 100,
         accounts: {
-          cangzhe: Number(acc.cangzhe) || 0,
+          yuebao: Number(acc.yuebao) || Number(acc.cangzhe) || 0,
+          holiday: Number(acc.holiday) || 0,
           abc: Number(acc.abc) || 0,
           icbc: Number(acc.icbc) || 0,
           goal: Number(acc.goal) || 0,
           deposit: Number(acc.deposit) || 0
         },
+        cmbDebt: Number(data.cmbDebt) || 0,
         emergency: Number((data.emergency || {}).balance) || 0
       }
     };
@@ -828,12 +1136,13 @@ var Store = (function () {
   function importJSON(text) {
     // 先解析：文件坏了直接报错，不白白占一份备份
     var data = JSON.parse(text);
-    if (!data || typeof data !== 'object') throw new Error('文件里没有账目数据');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('文件里没有账目数据');
+    if (data.version > SCHEMA_VERSION) throw new Error('账目版本比当前 App 新，不能导入后降级覆盖');
     var cur = read();
-    try { pushAutoBackup(JSON.stringify(cur), cur.version); } catch (e) { /* noop */ }
+    requireBackup(JSON.stringify(cur), cur.version);
     // 和打开 App、loadRaw 同一条路径：旧版本文件会先升级，不会直接标成新版本
     pinnedToday = '';
-    return write(ingest(data));
+    return write(ingest(data, text));
   }
 
   /** 距上次备份多少天。没导出过算 0 天（= 该备份了） */
@@ -894,6 +1203,13 @@ var Store = (function () {
     upsertGoal: upsertGoal,
     addBonus: addBonus,
     useEmergency: useEmergency,
+    reconcileAccountBalance: reconcileAccountBalance,
+    reconcileAccountBalances: reconcileAccountBalances,
+    splitPendingEntry: splitPendingEntry,
+    recordDueSubscriptions: recordDueSubscriptions,
+    updateEntry: updateEntry,
+    recordPaydayDifference: recordPaydayDifference,
+    accountBalance: accountBalance,
     saveSettings: saveSettings,
     cycleArchive: cycleArchive,
     exportJSON: exportJSON,

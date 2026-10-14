@@ -6,7 +6,7 @@
  *
  * 注意：**账目数据不在这里**，数据存在 localStorage，SW 不碰。
  */
-var CACHE = 'ledger-v2';        // 缓存名。改了代码就把版本号 +1
+var CACHE = 'ledger-v3-complete-20261014';
 var ASSETS = [
   './',
   './index.html',
@@ -26,6 +26,8 @@ var ASSETS = [
   './pages/plan.html',
   './pages/calendar.html',
   './pages/more.html',
+  './pages/accounts.html',
+  './pages/review-entry.html',
   './pages/settings.html',
   './pages/add.html',
   './pages/buy.html',

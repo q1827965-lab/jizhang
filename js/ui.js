@@ -367,7 +367,8 @@ var UI = (function () {
     // file:// 打开时不能用 SW（手机上不会这样，但电脑上直接双击 html 会）
     if (location.protocol === 'file:') return;
 
-    navigator.serviceWorker.register(base('sw.js')).then(function (reg) {
+    var hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register(abs('sw.js')).then(function (reg) {
       /* 有新版本装好了：提示用户刷新 */
       if (reg.waiting) showUpdateBar(reg.waiting);
       reg.addEventListener('updatefound', function () {
@@ -381,11 +382,8 @@ var UI = (function () {
       setInterval(function () { reg.update().catch(function () {}); }, 3600000);
     }).catch(function () { /* 注册失败不影响使用，只是不能离线 */ });
 
-    var reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', function () {
-      if (reloading) return;
-      reloading = true;
-      location.reload();
+      if (hadController) showUpdateBar();
     });
   }
 
@@ -481,6 +479,31 @@ var UI = (function () {
     }
   }
   if (typeof Store !== 'undefined' && Store.onWriteError) Store.onWriteError(handleWriteError);
+
+  // 测试页面使用独立固定数据；正式页面在读取账目后自动记当天到期的订阅。
+  if (typeof Store !== 'undefined' && !/tests\.html$/.test(location.pathname)) {
+    registerSW();
+    requestPersistentStorage();
+    try {
+      Store.recordDueSubscriptions();
+      setInterval(function () {
+        try {
+          var due = Store.recordDueSubscriptions();
+          if (due.recorded.length && Store.lastWriteOk()) {
+            if (/\/(home|plan|flow|more)\.html$/.test(location.pathname)) location.reload();
+            else toast('今天到期的订阅已自动记账');
+          }
+        } catch (e) { /* 保留正在编辑的表单，不自动跳页 */ }
+      }, 60000);
+    } catch (e) {
+      var root = document.getElementById('scroll') || document.getElementById('sheet') || document.body;
+      root.innerHTML = '<section class="card"><h2>账目升级已停止</h2><p>' + esc(e.message) + '</p><button type="button" class="btn btn--block" id="recoverOriginal">导出未覆盖的原始账目</button><button type="button" class="btn btn--outline btn--block" id="retryUpgrade">重试</button></section>';
+      root.querySelector('#recoverOriginal').onclick = function () {
+        download('记账-升级前原始数据.json', localStorage.getItem(Store.KEY) || '');
+      };
+      root.querySelector('#retryUpgrade').onclick = function () { location.reload(); };
+    }
+  }
 
   return {
     base: base, url: url, abs: abs,

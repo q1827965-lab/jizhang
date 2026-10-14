@@ -58,6 +58,8 @@
             UI.money(pv.safeSpend) + '</div></div>' +
     '</div>' +
         UI.barChart(fc.rows, fc.floor) +
+        '<div class="section-note">攒着（假期周转）余额 ' + UI.money(S.accounts.holiday) + ' · 单独用于假期，不计入安全可花</div>' +
+        '<div class="mini-list">' + fc.rows.map(function (r) { return '<div class="mini-list__row"><span>' + r.label + (r.holiday ? ' · 假期' : '') + '</span><span>周转 ' + UI.money(r.holidayBalance) + '</span></div>'; }).join('') + '</div>' +
         /* 负数周期：差多少、差哪几项，都写出来（第 8 节） */
         (negList ? negList.map(function (n) {
           return '<div class="neg-note"><span class="neg-note__t">' + UI.esc(n.label) +

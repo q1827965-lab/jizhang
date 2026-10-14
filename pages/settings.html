@@ -44,13 +44,15 @@
     { g: '规划', items: [
       { p: ['plan', 'floor'], l: '底线' },
       { p: ['plan', 'abcBuffer'], l: '农行缓冲' },
-      { p: ['plan', 'worstPaydayFallback'], l: '最坏发薪日（记录不满 3 次时）' },
-      { p: ['plan', 'coldThreshold'], l: '冷处理门槛' },
-      { p: ['plan', 'coldDays'], l: '冷处理天数' }
+      { p: ['plan', 'worstPaydayFallback'], l: '最坏发薪日（记录不满 3 次时）' }
     ] },
     { g: '应急金', items: [
       { p: ['emergency', 'target'], l: '目标' },
       { p: ['emergency', 'perCycle'], l: '每周期拨款' }
+    ] },
+    { g: '假期周期', items: [
+      { p: ['holiday', 'expectedSalary'], l: '假期预计实发' },
+      { p: ['holiday', 'transferPerCycle'], l: '每个普通发薪日留周转金' }
     ] },
     { g: '复盘建议', items: [
       { p: ['review', 'overspendCycles'], l: '连续几个周期' },
@@ -70,6 +72,17 @@
     var cur = obj;
     for (var i = 0; i < p.length - 1; i++) cur = cur[p[i]];
     cur[p[p.length - 1]] = v;
+  }
+
+  var envNames = { sub: '订阅', food: '吃饭', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
+  function subscriptionRow(sub) {
+    return '<section class="card subscription-row" data-id="' + UI.esc(sub.id || Store.uid('sub')) + '">' +
+      '<div class="field"><label>名称</label><input class="input sub-name" value="' + UI.esc(sub.name || '') + '"></div>' +
+      '<div class="grid2"><div class="field"><label>金额</label><input class="input sub-amount" inputmode="decimal" value="' + (sub.amount || '') + '"></div>' +
+      '<div class="field"><label>每月扣款日（1—31）</label><input class="input sub-day" inputmode="numeric" value="' + (sub.day || '') + '"></div></div>' +
+      '<div class="field"><label>年付月份（1—12，月付留空）</label><input class="input sub-month" inputmode="numeric" value="' + (sub.month || '') + '"></div>' +
+      '<div class="field"><label>信封</label><select class="input sub-env">' + Object.keys(envNames).map(function (key) { return '<option value="' + key + '"' + ((sub.envelope || 'sub') === key ? ' selected' : '') + '>' + envNames[key] + '</option>'; }).join('') + '</select></div>' +
+      '<button type="button" class="btn btn--muted removeSub">删除订阅设置</button></section>';
   }
 
   function render() {
@@ -101,6 +114,8 @@ var shown = it.join ? v.join(', ') : v;
       '</div>' +
 
       groups +
+      '<section class="card"><div class="field"><label for="holidayCycles">标记假期周期</label><input class="input" id="holidayCycles" value="' + UI.esc(st.holiday.cycles.join(', ')) + '"></div><div class="hint">填 3,9 表示每年 3 月、9 月周期；也可填具体周期，如 2027-03。逗号分隔，留空表示没有假期周期。3 月、9 月周期对应 2 月、8 月工资。</div></section>' +
+      '<section class="group"><h2>订阅清单</h2><div class="hint">到扣款日打开 App 会自动记账。年付额度仍按原有平摊规则；不足 31 天的月份按月底扣。删设置不删除已记流水。</div><div id="subscriptionRows">' + st.subscriptions.map(subscriptionRow).join('') + '</div><button class="btn btn--outline btn--block" id="addSub">新增订阅</button></section>' +
 
       '<div class="card card--tight">' +
         '<div class="row-between" style="align-items:baseline">' +
@@ -139,6 +154,7 @@ var shown = it.join ? v.join(', ') : v;
       '</section>';
 
     UI.on(root, '#save', 'click', function () {
+      try {
       var next = JSON.parse(JSON.stringify(st));
       UI.$$('[data-p]', root).forEach(function (el) {
         var p = el.getAttribute('data-p').split(',');
@@ -146,13 +162,33 @@ var shown = it.join ? v.join(', ') : v;
         if (p.join('.') === 'warn.mobilityOther') {
           set(next, p, raw.split(/[,，\s]+/).filter(Boolean).map(Number));
         } else {
+          if (!isFinite(Number(raw)) || Number(raw) < 0) throw new Error('设置金额和次数须为不小于 0 的数字');
           set(next, p, raw === '' ? 0 : Number(raw));
         }
       });
+      next.holiday.cycles = document.getElementById('holidayCycles').value.split(/[,，\s]+/).filter(Boolean).map(function (key) {
+        if (/^(?:[1-9]|0[1-9]|1[0-2])$/.test(key)) return Calc.pad2(Number(key));
+        if (/^\d{4}-(?:0[1-9]|1[0-2])$/.test(key)) return key;
+        throw new Error('假期周期请填月份 1—12，或 YYYY-MM');
+      });
+      next.subscriptions = UI.$$('.subscription-row', root).map(function (row) {
+        var name = row.querySelector('.sub-name').value.trim(), amount = Number(row.querySelector('.sub-amount').value), day = Number(row.querySelector('.sub-day').value), monthText = row.querySelector('.sub-month').value.trim(), month = monthText ? Number(monthText) : 0;
+        if (!name || !isFinite(amount) || amount <= 0 || !Number.isInteger(day) || day < 1 || day > 31 || !Number.isInteger(month) || month < 0 || month > 12 || (monthText && month === 0)) throw new Error('订阅须填写名称、正金额、1—31 的日号；年付月份填 1—12');
+        var previous = st.subscriptions.filter(function (sub) { return sub.id === row.getAttribute('data-id'); })[0] || {};
+        return Object.assign({}, previous, { id: row.getAttribute('data-id'), name: name, amount: Calc.round2(amount), day: day, month: month, envelope: row.querySelector('.sub-env').value });
+      });
+      delete next.plan.coldThreshold; delete next.plan.coldDays;
       Store.saveSettings(next);
+      if (!Store.lastWriteOk()) return;
       UI.toast('已保存，首页和排表会跟着变');
       render();
+      } catch (e) { UI.toast(e.message); }
     });
+    function bindSubscriptions() {
+      UI.$$('.removeSub', root).forEach(function (button) { button.onclick = function () { button.closest('.subscription-row').remove(); }; });
+    }
+    bindSubscriptions();
+    UI.on(root, '#addSub', 'click', function () { document.getElementById('subscriptionRows').insertAdjacentHTML('beforeend', subscriptionRow({})); bindSubscriptions(); });
 
 UI.on(root, '#reset', 'click', function () {
       var S = Store.state();

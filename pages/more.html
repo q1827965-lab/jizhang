@@ -113,13 +113,14 @@
         '</div>' +
         (lastUp
           ? '<div class="hint" style="margin-top:8px">上次打开时数据结构从 v' + lastUp.from + ' 升到 v' + lastUp.to +
-       '，旧数据已自动备份' + (hist.length ? '（共 ' + hist.length + ' 份）' : '') + '</div>' +
-            (hist.length ? '<button type="button" class="btn btn--muted btn--sm" id="doHistory">查看自动备份</button>' : '')
+       '，旧数据已自动备份' + (hist.length ? '（共 ' + hist.length + ' 份）' : '') + '</div>'
   : '') +
+        (hist.length ? '<button type="button" class="btn btn--muted btn--sm" id="doHistory">查看自动备份</button>' : '') +
       '</section>' +
 
       '<section class="card card--flush">' +
         '<div class="link-list">' +
+          '<a href="' + UI.url('accounts.html') + '"><span style="flex:1"><span class="t">账户余额</span><span class="s">填写实际余额 · 差额记待核对</span></span>' + UI.icon('chevron', 18) + '</a>' +
           '<a href="' + UI.url('settings.html') + '">' +
             '<span style="flex:1"><span class="t">设置</span>' +
           '<span class="s">信封额度 · 分类 · 底线和缓冲 · 教学周</span></span>' + UI.icon('chevron', 18, 'var(--ink-3)') +
@@ -150,9 +151,11 @@
         return (i + 1) + '. ' + b.at.slice(0, 16).replace('T', ' ') +
        '　来自 v' + b.fromVersion;
       }).join('\n');
-      if (confirm('自动备份清单\n\n' + lines + '\n\n要下载最新的一份吗？')) {
-        UI.download('自动备份-' + list[0].at.slice(0, 10) + '.json', list[0].text);
-      }
+      var answer = prompt('自动备份清单\n\n' + lines + '\n\n输入要下载的序号（1 为最新）：', '1');
+      if (answer === null) return;
+      var index = Number(answer) - 1;
+      if (!Number.isInteger(index) || !list[index]) { UI.toast('请选择清单中的序号'); return; }
+      UI.download('自动备份-' + list[index].at.slice(0, 10) + '.json', list[index].text);
     });
 
     /* 第 9 条：清空全部账目要输入「清空」两个字 */
@@ -224,7 +227,9 @@
         '· 定期存单 ' + s.depositCount + ' 张、大目标 ' + s.goalCount + ' 个\n' +
     '· 日历排班 ' + s.calendarDays + ' 天\n\n' +
         '账户余额：\n' +
-        '· 攒着 ' + UI.money(s.accounts.cangzhe) + '\n' +
+        '· 余额宝 ' + UI.money(s.accounts.yuebao) + '\n' +
+        '· 攒着（假期周转） ' + UI.money(s.accounts.holiday) + '\n' +
+        '· 招行总欠款 ' + UI.money(s.cmbDebt) + '\n' +
         '· 农行 ' + UI.money(s.accounts.abc) + '\n' +
         '· 工行 ' + UI.money(s.accounts.icbc) + '\n' +
     '· 目标账户 ' + UI.money(s.accounts.goal) + '\n' +

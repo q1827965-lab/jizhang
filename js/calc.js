@@ -67,6 +67,108 @@ var Calc = (function () {
   }
 
   /* ==================================================================
+   * 0.5 账户与假期周期（第五轮修订）
+   * ================================================================== */
+
+  /** 账户 key → 中文名。原「攒着」已改名「余额宝」；「攒着（假期周转）」是独立的假期周转金账户 */
+  var ACCOUNT_NAMES = {
+    abc: '农行',
+    yuebao: '余额宝',
+    holiday: '攒着（假期周转）',
+    icbc: '工行',
+    goal: '目标账户',
+    deposit: '定期',
+    jiaohang: '交行（应急金）'
+  };
+
+  function accountName(key) {
+    return ACCOUNT_NAMES[key] || key;
+  }
+
+  /**
+   * 一笔流水从哪个账户出钱。
+   * 普通流水按信封推（自由支配 → 余额宝，其余 → 农行）；
+   * 「待核对」流水带 account 字段，拆分后各分片也沿用，保证对账基数不乱。
+   */
+  function entryAccount(entry) {
+    if (entry && entry.account) return entry.account;
+    return (entry && entry.envelope === 'free') ? 'yuebao' : 'abc';
+  }
+
+  /** 四个花钱信封每周期合计（默认 3090） */
+  function envelopeTotal(state) {
+    var env = (state && state.settings && state.settings.envelopes) || {};
+    return round2(nz(env.food, 1050) + nz(env.sub, 645) + nz(env.mobility, 825) + nz(env.free, 570));
+  }
+
+  /** 某个周期 key 是不是假期周期（2 月、8 月工资到账的那种，实发比平常少） */
+  function isHolidayCycle(state, cycleKey) {
+    var cfg = (state && state.settings && state.settings.holiday) || {};
+    var list = cfg.cycles || [];
+    return list.indexOf(cycleKey) >= 0 || list.indexOf(String(cycleKey).slice(5, 7)) >= 0;
+  }
+
+  /** afterKey 之后最近的一个假期周期 key；没有则返回 '' */
+  function nextHolidayKey(state, afterKey) {
+    var cfg = (state && state.settings && state.settings.holiday) || {};
+    for (var i = 1; i <= 120; i++) {
+      var key = addMonthsKey(afterKey, i);
+      if (isHolidayCycle(state, key)) return key;
+    }
+    return '';
+  }
+
+  /** 假期周期的缺口 = 四信封合计 − 假期周期预计实发（默认 3090 − 1600 = 1490） */
+  function holidayGap(state) {
+    var cfg = (state && state.settings && state.settings.holiday) || {};
+    return round2(Math.max(0, envelopeTotal(state) - nz(cfg.expectedSalary, 1600)));
+  }
+
+  /**
+   * 订阅自动入账（第五轮）：到扣款日当天该记的订阅。
+   * 月付：每月固定日号；年付：填了月份，每年那一月的那一天。
+   * 已记过的不再重复记（按 autoSubId + 月份/年份去重）。
+   */
+  function dueSubscriptions(state, todayStr) {
+    var today = todayStr || state.today;
+    var subs = (state.settings && state.settings.subscriptions) || [];
+    var subCatId = categoryIdsByName(state, '订阅')[0] || 'c-fix-sub';
+    var out = [];
+    for (var i = 0; i < subs.length; i++) {
+      var sub = subs[i];
+      if (!sub || !sub.name || !(nz(sub.amount, 0) > 0)) continue;
+      var annual = nz(sub.month, 0) >= 1 && nz(sub.month, 0) <= 12;
+      var day = Math.min(31, Math.max(1, Math.round(nz(sub.day, 1))));
+      var due = false;
+      if (annual) {
+        due = monthKey(today) === (today.slice(0, 4) + '-' + pad2(sub.month))
+          && dayOfMonth(today) === Math.min(day, daysInMonth(+today.slice(0, 4), sub.month));
+      } else {
+        due = dayOfMonth(today) === Math.min(day, daysInMonth(+today.slice(0, 4), +today.slice(5, 7)));
+      }
+      if (!due) continue;
+      var exists = (state.subscriptionOccurrences || []).indexOf(sub.id + ':' + monthKey(today)) >= 0 || (state.entries || []).some(function (e) {
+        if (e.autoSubId !== sub.id) return false;
+        return annual
+          ? String(e.date).slice(0, 4) === today.slice(0, 4)
+          : monthKey(e.date) === monthKey(today);
+      });
+      if (exists) continue;
+      out.push({
+        id: sub.id,
+        catId: subCatId,
+        envelope: sub.envelope || 'sub',
+        amount: round2(nz(sub.amount, 0)),
+        note: sub.name + ' · 自动',
+        date: today,
+        time: '09:00',
+        autoSubId: sub.id
+      });
+    }
+    return out;
+  }
+
+  /* ==================================================================
    * 1. 日期工具（全部基于 'YYYY-MM-DD' 字符串）
    * ================================================================== */
 
@@ -560,7 +662,7 @@ start: start,
     var list = entriesOfCycle(state, opt.cycleKey);
     var n = 0;
     for (var i = 0; i < list.length; i++) {
-      if (opt.catIds && opt.catIds.indexOf(list[i].catId) >= 0) n++;
+      if (opt.catIds && opt.catIds.indexOf(list[i].catId) >= 0 && nz(list[i].amount, 0) > 0) n++;
     }
     return n;
   }
@@ -589,8 +691,8 @@ start: start,
 
   /**
    * 信封余额。
-   *   自由支配余额 = 攒着 + 农行里本周期还没花的自由支配
-   *   缓冲模式下农行不拆信封，自由支配全部在攒着
+   *   自由支配余额 = 余额宝 + 农行里本周期还没花的自由支配
+   *   缓冲模式下农行不拆信封，自由支配全部在余额宝
    */
   function envelopeState(state, cycleOrKey) {
     var env = state.settings.envelopes;
@@ -620,14 +722,14 @@ start: start,
       var amt = nz(e.amount, 0);
       if (used[e.envelope] == null) continue;
       used[e.envelope] = round2(used[e.envelope] + amt);
-      if (taxiIds.indexOf(e.catId) >= 0) { taxiCount++; seqTaxi++; }
-      if (takeoutIds.indexOf(e.catId) >= 0) { seqTakeout++; if (seqTakeout <= nz(state.settings.takeout.perCycle, 4)) takeoutCount++; }
+      if (amt > 0 && taxiIds.indexOf(e.catId) >= 0) { taxiCount++; seqTaxi++; }
+      if (amt > 0 && takeoutIds.indexOf(e.catId) >= 0) { seqTakeout++; if (seqTakeout <= nz(state.settings.takeout.perCycle, 4)) takeoutCount++; }
     }
 
     var taxi = taxiQuota(state, cycle);
     var freeQuota = nz(env.free, 570);
     var freeInAbc = cycle.bufferMode ? 0 : Math.max(0, round2(freeQuota - used.free));
-    var cangzhe = nz(state.accounts.cangzhe, 0);
+    var yuebao = nz(state.accounts.yuebao, 0);
 
     var foodQuota = nz(env.food, 1050);
     var otherQuota = nz(env.mobilityOther, 400);
@@ -663,15 +765,17 @@ start: start,
       other: {
         quota: otherQuota,
         used: used.other,
-        left: round2(otherQuota - used.other),
+        /* 第五轮：机动·其他剩余 = 机动总额 − 机动已花 − 打车剩余次数 × 单价。
+           打车还没用完的次数是「预留」，先从机动总额里扣掉，剩下的才是其他能用的。 */
+        left: round2(nz(env.mobility, 825) - used.taxi - used.other - taxi.leftCount * taxiPrice),
         usedPct: otherQuota > 0 ? round2((used.other / otherQuota) * 100) : 0
       },
       free: {
         quota: freeQuota,
         used: used.free,
         leftInAbc: freeInAbc,
-        cangzhe: round2(cangzhe),
-        balance: round2(cangzhe + freeInAbc)
+        yuebao: round2(yuebao),
+        balance: round2(yuebao + freeInAbc)
       },
       takeout: {
         perCycle: nz(state.settings.takeout.perCycle, 4),
@@ -682,7 +786,9 @@ start: start,
       },
       abcBalance: round2(nz(state.accounts.abc, 0)),
       abcOpening: round2(nz(state.cycleAbcOpening, nz(state.accounts.abc, 0))),
-      cangzhe: round2(cangzhe),
+      yuebao: round2(yuebao),
+      holiday: round2(nz(state.accounts.holiday, 0)),
+      cmbDebt: round2(nz(state.cmbDebt, 0)),
       _used: used,
       _entries: list
     };
@@ -756,34 +862,37 @@ start: start,
   }
 
   /**
-   * 发薪日扫入攒着的金额（第 8 节）：
-   *   扫入 = 预计发薪日农行余额 − 缓冲（350）
-   * 结果为负数表示要从攒着补到农行。
+   * 发薪日扫入余额宝的金额（第 8 节，第五轮加招行欠款）：
+   *   扫入 = 预计发薪日农行余额 − 招行总欠款 − 缓冲（350）
+   * 结果为负数表示要从余额宝补到农行。
    *
    *   · 当前周期：预计发薪日农行余额 = 农行当前实际余额 − 吃饭/机动/固定订阅三个信封本周期的剩余额度
    *     （若调用方直接给定了发薪日农行余额，如 16.2 验收场景，就直接用它）
    *   · 之后的标准周期：扫入 570（= 自由支配额度，规格第 2 节）
+   * 招行信用卡每月 17 日从农行自动全额扣款，所以发薪日农行里「还没被划走」的钱
+   * 要先减去招行总欠款，剩下的才是能扫进余额宝的。
    */
   function sweepAtPayday(state, cycle, env, opts) {
     opts = opts || {};
     var bufferTarget = nz(state.settings.plan.abcBuffer, 350);
+    var cmbDebt = round2(nz(opts.cmbDebt, nz(state.cmbDebt, 0)));
     var abcAtPayday;
     if (isNum(opts.paydayAbcBalance)) {
       abcAtPayday = opts.paydayAbcBalance;
     } else {
       abcAtPayday = round2(nz(state.accounts.abc, 0) - threeEnvelopeLeft(env).total);
     }
-    return round2(abcAtPayday - bufferTarget);
+    return round2(abcAtPayday - cmbDebt - bufferTarget);
   }
 
   /**
-   * 预测起点：攒着余额（本周期刚过发薪日，信封都是满的，自由支配还没开始花）。
+   * 预测起点：余额宝余额（本周期刚过发薪日，信封都是满的，自由支配还没开始花）。
    *
-   * 农行里那部分自由支配不在这里加——发薪日会以「扫入攒着」的形式单独结算，
+   * 农行里那部分自由支配不在这里加——发薪日会以「扫入余额宝」的形式单独结算，
    * 否则会和下面的调整重复计算。
    */
   function forecastStartBalance(state) {
-    return round2(nz(state.accounts.cangzhe, 0));
+    return round2(nz(state.accounts.yuebao, 0));
   }
 
   /**
@@ -824,6 +933,17 @@ start: start,
     // 当前周期这次发薪日扫入多少；之后的标准周期都按自由支配额度扫入
     var sweepNow = sweepAtPayday(state, cycle, env, opts);
 
+    /* 假期周期（第五轮）：假期周期的发薪日实发比平常少（默认 1600），
+       缺口 = 四信封合计 − 预计实发。周转金够用时余额宝和平常一样；
+       不够时，差额从余额宝出，余额宝预测从那个周期起整体下移。 */
+    var gap = holidayGap(state);
+    var holidayBal = round2(nz(state.accounts.holiday, 0));
+    var holidayShortfall = 0;
+    var holidayShortfallCycle = '';
+    var firstHolidayShortfall = 0;
+    var holidayCarry = nz((state.paydayCarry || {}).holiday, 0);
+    var holidayPerCycle = Math.max(0, nz((state.settings.holiday || {}).transferPerCycle, 300));
+
     var rows = [];
     var bal = startBalance;
     for (var i = 0; i < keys.length; i++) {
@@ -837,6 +957,8 @@ start: start,
         label: cycleLabel(keys[i]),
         shortLabel: monthLabel(keys[i]),
         isCurrent: i === 0,
+        holiday: isHolidayCycle(state, keys[i]),
+        holidayBalance: holidayBal,
         start: round2(start),
         scheduled: schedAmt,
         scheduledNames: due.map(function (it) { return it.name; }),
@@ -846,7 +968,28 @@ start: start,
         conditionalNames: [],
         items: []
       });
-      bal = round2(afterScheduled + (i === 0 ? sweepNow : freeQuota));
+      // 下一个周期的期初 = 本周期最低点 + 发薪日扫入；若下个周期是假期周期，先扣差额
+      var delta = round2(i === 0 ? sweepNow : freeQuota);
+      if (i + 1 < keys.length && isHolidayCycle(state, keys[i + 1])) {
+        var covered = round2(Math.min(gap, Math.max(0, holidayBal)));
+        var short = round2(Math.max(0, gap - holidayBal));
+        if (short > 0) {
+          holidayShortfall = round2(holidayShortfall + short);
+          if (!holidayShortfallCycle) {
+            holidayShortfallCycle = keys[i + 1];
+            firstHolidayShortfall = short;
+          }
+        }
+        holidayBal = round2(holidayBal - covered);
+        holidayCarry = round2(holidayCarry + holidayPerCycle);
+        delta = round2(delta - short);
+      } else if (i + 1 < keys.length) {
+        if (!nextHolidayKey(state, keys[i + 1]) || holidayBal < gap) {
+          holidayBal = round2(holidayBal + holidayPerCycle + holidayCarry);
+        }
+        holidayCarry = 0;
+      }
+      bal = round2(afterScheduled + delta);
     }
 
     var minLow = rows.length ? Math.min.apply(null, rows.map(function (r) { return r.low; })) : startBalance;
@@ -865,7 +1008,14 @@ start: start,
       floor: floor,
       minLow: round2(minLow),
       safeSpend: round2(Math.max(0, minLow - floor)),
-      willGoNegative: rows.some(function (r) { return r.low < 0; })
+      willGoNegative: rows.some(function (r) { return r.low < 0; }),
+      holiday: {
+        fund: round2(nz(state.accounts.holiday, 0)),
+        gap: gap,
+        shortfall: holidayShortfall,
+        firstShortfall: firstHolidayShortfall,
+        shortfallCycle: holidayShortfallCycle
+      }
     };
   }
 
@@ -926,7 +1076,7 @@ start: start,
       }
     }
 
-    // 回填：条件项花掉的钱会永久离开攒着，所以下一周期的期初要在扣减之后再算。
+    // 回填：条件项花掉的钱会永久离开余额宝，所以下一周期的期初要在扣减之后再算。
     // 下一周期开头扫进来多少：当前周期用本次发薪日扫入额，之后的标准周期用自由支配额度。
     for (var n = 0; n < fc.rows.length; n++) {
       var row = fc.rows[n];
@@ -1055,7 +1205,10 @@ start: start,
       negativeCycles: negativeCycles,
       firstNegative: negativeCycles.length ? negativeCycles[0] : null,
       scheduled: scheduled,
-      conditional: fc.items
+      conditional: fc.items,
+      /* 假期周转金：单独显示，不计入安全可花、不参与条件项分配 */
+      holidayBalance: round2(nz(state.accounts.holiday, 0)),
+      holidayShortfall: fc.holiday ? fc.holiday.shortfall : 0
     };
   }
 
@@ -1088,14 +1241,19 @@ start: start,
   /**
    * kind: 'need' 必要的 / 'want' 想要的
    * 返回 { conclusion, label, cycleKey, cycleLabel, reasons[], addAs, margin }
+   *
+   * 第五轮改判断顺序（去掉冷处理）：
+   *   · 必要的：买了会让余额宝未来变负、或挤掉排定项 → 「不建议买」（写明会挤掉哪几项）；
+   *     不会 → 「现在能买」。
+   *   · 想要的：金额 > 可用余量（安全可花）→ 「X 月周期后能买」，给出最早周期，
+   *     预测范围内都排不开时写「预测范围内排不开」；否则 → 「现在能买」。
+   *   · 想要的不走「不建议买」这一格 —— 买不起就等，等待本身就是冷静。
    */
   function buyVerdict(state, input) {
     var amount = round2(nz(input.amount, 0));
     var kind = input.kind === 'need' ? 'need' : 'want';
     var plan = input.plan || planView(state, { paydayAbcBalance: input.paydayAbcBalance });
     var fc = plan.forecast;
-    var coldThreshold = nz(state.settings.plan.coldThreshold, 255);
-    var coldDays = nz(state.settings.plan.coldDays, 1);
     var floor = nz(state.settings.plan.floor, 200);
     var reasons = [];
 
@@ -1122,9 +1280,14 @@ start: start,
     var probePlan = planView(probe, { paydayAbcBalance: input.paydayAbcBalance });
     var willGoNegative = probePlan.forecast.willGoNegative;
 
-    // 「挤掉排定项」：必要项放进指定周期后，那个周期变负
-    var squeezes = probePlan.forecast.rows.some(function (r) {
-      return r.low < 0 && r.scheduled > 0;
+    // 「挤掉排定项」：放进排表后，有周期变负且那个周期有排定项要付
+    var squeezedNames = [];
+    probePlan.forecast.rows.forEach(function (r) {
+      if (r.low < 0 && r.scheduled > 0) {
+        (r.scheduledNames || []).forEach(function (n) {
+          if (squeezedNames.indexOf(n) < 0) squeezedNames.push(n);
+        });
+      }
     });
 
     var earliest = null;
@@ -1138,91 +1301,76 @@ start: start,
       if (pi.id === '__probe__') continue;
       for (var k = 0; k < plan.conditional.length; k++) {
         var oi = plan.conditional[k];
-if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
-            var early = monthsBetweenKeys(pi.cycleKey, oi.cycleKey) > 0;
-            changedNames.push(pi.name + '（' + (early ? '提前到' : '推到') + shortOf(pi.cycleKey) + '）');
-          }
+        if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
+          var early = monthsBetweenKeys(pi.cycleKey, oi.cycleKey) > 0;
+          changedNames.push(pi.name + '（' + (early ? '提前到' : '推到') + shortOf(pi.cycleKey) + '）');
+        }
       }
     }
 
-    if (willGoNegative) {
-      reasons.push(margin <= 0
-        ? '现在安全可花 ' + money(margin) + '，买了会让自由支配未来变负'
-        : '买了会让 ' + shortOf(fc.keys[0]) + '周期的自由支配变负');
-      if (squeezes) reasons.push('会把这个周期的排定项挤掉，排定项到期必须付');
-      reasons.push('建议先别买，或把它挪到更晚的周期再看看');
+    /* ---------- 必要的 ---------- */
+    if (kind === 'need') {
+      if (willGoNegative || squeezedNames.length) {
+        if (margin <= 0) {
+          reasons.push('现在安全可花 ' + money(margin) + '，买了会让余额宝未来变负');
+        } else {
+          reasons.push('买了会让 ' + shortOf(fc.keys[0]) + '周期的余额宝变负');
+        }
+        if (squeezedNames.length) {
+          reasons.push('会挤掉排定项：' + squeezedNames.join('、') + '（排定项到期必须付）');
+        }
+        reasons.push('建议先别买，或把它挪到更晚的周期再看看');
+        return {
+          conclusion: 'no', label: '不建议买', reasons: reasons,
+          addAs: 'scheduled',
+          margin: margin, cycleKey: '', plan: plan, probePlan: probePlan
+        };
+      }
+      var targetKey = input.cycleKey || nextCycleKeys(plan.cycle.key, 1)[0];
+      var targetRow = null;
+      for (var t = 0; t < probePlan.forecast.rows.length; t++) {
+        if (probePlan.forecast.rows[t].key === targetKey) targetRow = probePlan.forecast.rows[t];
+      }
+      reasons.push('必要项按 ' + cycleLabel(targetKey) + '付款，到期直接扣');
+      reasons.push(targetRow
+        ? '付完后该周期最低点 ' + money(targetRow.low) + (targetRow.low < floor ? '，会短暂跌破底线 ' + money(floor) : '，还在底线之上')
+        : '已排进排表');
+      reasons.push('放进排表后按最贵优先排，条件项可买周期' + (changedNames.length ? '会变：' + changedNames.join('、') : '不变'));
       return {
-        conclusion: 'no', label: '不建议买', reasons: reasons,
-        addAs: kind === 'need' ? 'scheduled' : 'conditional',
-        margin: margin, cycleKey: '', plan: plan, probePlan: probePlan
+        conclusion: 'now', label: '现在能买', reasons: reasons, addAs: 'scheduled',
+        margin: margin, cycleKey: targetKey, plan: plan, probePlan: probePlan
       };
     }
 
-    if (kind === 'want') {
-      // 第 9 节：按表格从上到下判断，命中即停。
-      // 先看买不买得起（买不起 → 某周期后能买，等待本身就是冷静）；
-      // 买得起且 > 冷处理门槛 → 冷处理；买得起且 ≤ 门槛 → 现在能买。
-
-      // ② 某周期后能买：想要且金额 > 当前可用余量（买不起）
-      if (amount > margin) {
-        var cyc = earliest && earliest.cycleKey ? earliest.cycleKey : '';
-        reasons.push('现在安全可花 ' + money(margin) + '，买了会低于 ' + money(floor) + ' 底线');
-        if (cyc) {
-          reasons.push('等一等就好：等到' + cycleLabel(cyc) + '就有钱买了');
-        } else {
-          reasons.push('预测范围内都排不开，要等更久或先攒一攒');
-        }
-        reasons.push(changedNames.length
-          ? '放进排表后按最贵优先排，' + changedNames.join('、') + '会变'
-          : '放进排表后按最贵优先排，其他条件项的可买周期不变');
-        reasons.push('买不起就先不冷处理——等待本身就是冷静');
-        return {
-          conclusion: 'later',
-          label: cyc ? cycleLabel(cyc) + '后能买' : '预测范围内排不开',
-          reasons: reasons, addAs: 'conditional', margin: margin,
-          cycleKey: cyc, plan: plan, probePlan: probePlan
-        };
+    /* ---------- 想要的 ---------- */
+    // 买不起 → 某周期后能买（等待本身就是冷静，不再另设冷处理）
+    if (amount > margin) {
+      var cyc = earliest && earliest.cycleKey ? earliest.cycleKey : '';
+      reasons.push('现在安全可花 ' + money(margin) + '，买了会低于 ' + money(floor) + ' 底线');
+      if (cyc) {
+        reasons.push('等一等就好：等到' + cycleLabel(cyc) + '就有钱买了');
+      } else {
+        reasons.push('预测范围内都排不开，要等更久或先攒一攒');
       }
-
-      // ③ 先冷处理：想要、买得起，且金额 > 冷处理门槛
-      if (amount > coldThreshold) {
-        reasons.push('现在买得起：安全可花 ' + money(margin) + '，买了还剩 ' + money(margin - amount));
-        reasons.push('金额 ' + money(amount) + ' 超过冷处理门槛 ' + money(coldThreshold));
-        reasons.push('先冷处理 ' + coldDays + ' 天，到期再决定');
-        reasons.push('放进排表不占本周期余量，别的条件项可买周期不变');
-        return {
-          conclusion: 'cool', label: '先冷处理 ' + coldDays + ' 天', reasons: reasons,
-          addAs: 'conditional', margin: margin, cycleKey: '', plan: plan, probePlan: probePlan,
-          coolUntil: addDays(state.today, coldDays)
-        };
-      }
-
-      // ④ 现在能买：想要、买得起，且金额 ≤ 冷处理门槛
-      reasons.push('现在安全可花 ' + money(margin) + '，买了还剩 ' + money(margin - amount));
       reasons.push(changedNames.length
         ? '放进排表后按最贵优先排，' + changedNames.join('、') + '会变'
         : '放进排表后按最贵优先排，其他条件项的可买周期不变');
-      reasons.push('不到 ' + money(coldThreshold) + '，不用冷处理');
       return {
-        conclusion: 'now', label: '现在能买', reasons: reasons, addAs: 'conditional',
-        margin: margin, cycleKey: plan.cycle.key, plan: plan, probePlan: probePlan
+        conclusion: 'later',
+        label: cyc ? cycleLabel(cyc) + '后能买' : '预测范围内排不开',
+        reasons: reasons, addAs: 'conditional', margin: margin,
+        cycleKey: cyc, plan: plan, probePlan: probePlan
       };
     }
 
-    // 必要
-    var targetKey = input.cycleKey || nextCycleKeys(plan.cycle.key, 1)[0];
-    var targetRow = null;
-    for (var t = 0; t < probePlan.forecast.rows.length; t++) {
-      if (probePlan.forecast.rows[t].key === targetKey) targetRow = probePlan.forecast.rows[t];
-    }
-    reasons.push('必要项按 ' + cycleLabel(targetKey) + '付款，到期直接扣');
-    reasons.push(targetRow
-      ? '付完后该周期最低点 ' + money(targetRow.low) + (targetRow.low < floor ? '，会短暂跌破底线 ' + money(floor) : '，还在底线之上')
-      : '已排进排表');
-    reasons.push('放进排表后按最贵优先排，条件项可买周期' + (changedNames.length ? '会变：' + changedNames.join('、') : '不变'));
+    // 买得起 → 现在能买
+    reasons.push('现在安全可花 ' + money(margin) + '，买了还剩 ' + money(margin - amount));
+    reasons.push(changedNames.length
+      ? '放进排表后按最贵优先排，' + changedNames.join('、') + '会变'
+      : '放进排表后按最贵优先排，其他条件项的可买周期不变');
     return {
-      conclusion: 'now', label: '现在能买', reasons: reasons, addAs: 'scheduled',
-      margin: margin, cycleKey: targetKey, plan: plan, probePlan: probePlan
+      conclusion: 'now', label: '现在能买', reasons: reasons, addAs: 'conditional',
+      margin: margin, cycleKey: plan.cycle.key, plan: plan, probePlan: probePlan
     };
   }
 
@@ -1325,6 +1473,31 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
       });
     }
 
+    // 7 假期周转金不够（第五轮）：假期周期实发比平常少，周转金盖不住缺口时，差额从余额宝出
+    var hol = plan.forecast.holiday;
+    if (hol && hol.shortfall > 0) {
+      out.push({
+        type: 'holiday', level: 'warn',
+        text: (hol.shortfallCycle ? cycleLabel(hol.shortfallCycle) : '假期周期') +
+          '工资按预计实发 ' + money(nz((state.settings.holiday || {}).expectedSalary, 1600)) +
+          ' 算，攒着（假期周转）不够，差 ' + money(hol.firstShortfall || hol.shortfall) + ' 要从余额宝出'
+      });
+    }
+    if (state.lastHolidayShortfall && state.lastHolidayShortfall.cycleKey === cycle.key) {
+      out.push({ type: 'holiday', level: 'warn', text: '本期攒着（假期周转）不足，差 ' +
+        money(state.lastHolidayShortfall.amount) + '，已从余额宝补到农行' });
+    }
+
+    // 8 招行信用卡（第五轮）：每月扣款日的前一天提醒确认农行余额够还本期账单
+    var cmbCfg = state.settings.cmb || {};
+    var cmbDueDay = nz(cmbCfg.dueDay, 17);
+    if (dayOfMonth(state.today) === cmbDueDay - 1) {
+      out.push({
+        type: 'cmb', level: 'info',
+        text: '明天招行自动扣款，确认农行余额够还本期账单'
+      });
+    }
+
     return out;
   }
 
@@ -1347,17 +1520,25 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
       catName: cat.name,
       cat1: cat.parent,
       envelope: envName,
+      /* 待核对 / 订阅自动入账等带 account 的流水，按 account 记账户，
+         不按信封推（拆分后各分片沿用原 account，对账基数不乱） */
+      account: draft.account || undefined,
+      pending: draft.pending ? true : undefined,
+      auto: draft.auto ? true : undefined,
+      autoSubId: draft.autoSubId || undefined,
+      splitFrom: draft.splitFrom || undefined,
       note: draft.note || ''
     });
     return next;
   }
 
-  /** 应用一笔支出到账户（自由支配扣攒着，其余扣农行） */
+  /** 应用一笔流水到账户（自由支配扣余额宝，其余扣农行；待核对按 account） */
   function applyEntryToAccounts(state, entry) {
     var next = clone(state);
     var amt = nz(entry.amount, 0);
-    if (entry.envelope === 'free') next.accounts.cangzhe = round2(nz(next.accounts.cangzhe, 0) - amt);
-    else next.accounts.abc = round2(nz(next.accounts.abc, 0) - amt);
+    var acc = entryAccount(entry);
+    if (acc === 'yuebao') next.accounts.yuebao = round2(nz(next.accounts.yuebao, 0) - amt);
+    else if (acc === 'abc') next.accounts.abc = round2(nz(next.accounts.abc, 0) - amt);
     return next;
   }
 
@@ -1591,7 +1772,7 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
       amount: amount, catId: draft.catId, catName: cat.name, cat1: cat.parent,
       envelope: 'free', note: draft.note || ''
     });
-    probe.accounts.cangzhe = round2(nz(probe.accounts.cangzhe, 0) - amount);
+    probe.accounts.yuebao = round2(nz(probe.accounts.yuebao, 0) - amount);
     var after = planView(probe);
 
     var minBefore = before.forecast.minLow;
@@ -1716,7 +1897,7 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
     var goals = (state.goals || []).slice().sort(function (a, b) { return nz(a.order, 0) - nz(b.order, 0); });
     var active = goals.filter(function (g) { return nz(g.saved, 0) < nz(g.target, 0); });
     if (!active.length) {
-      return { toGoal: [], toDeposit: round2(amt / 2), toCangzhe: round2(amt - amt / 2), note: '没有进行中的目标，一半进定期一半进攒着' };
+      return { toGoal: [], toDeposit: round2(amt / 2), toYuebao: round2(amt - amt / 2), note: '没有进行中的目标，一半进定期一半进余额宝' };
     }
     var left = amt;
     var toGoal = [];
@@ -1728,7 +1909,7 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
       toGoal.push({ id: g.id, name: g.name, amount: give });
       left = round2(left - give);
     }
-    return { toGoal: toGoal, toDeposit: 0, toCangzhe: left, note: toGoal.length ? '全部投进目标：' + toGoal.map(function (t) { return t.name; }).join('、') : '' };
+    return { toGoal: toGoal, toDeposit: 0, toYuebao: left, note: toGoal.length ? '全部投进目标：' + toGoal.map(function (t) { return t.name; }).join('、') : '' };
   }
 
   /** 应急金：动用过就一次补完，否则每周期拨固定额直到目标 */
@@ -1803,49 +1984,56 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
     var list = entriesOfCycle(state, cycleKey);
     var spent = 0;
     for (var i = 0; i < list.length; i++) {
-      if (isFromAbc(list[i].envelope)) spent += nz(list[i].amount, 0);
+      if (entryAccount(list[i]) === 'abc') spent += nz(list[i].amount, 0);
   }
     return round2(opening - spent);
   }
 
   /**
-   * 按记账算出攒着应有余额（用于对账）。
-   * 攒着 = 上一周期发薪日扫入后的余额 − 本周期自由支配支出 − 本周期买掉的条件项
+   * 按记账算出余额宝应有余额（用于对账）。
+   * 余额宝 = 上一周期发薪日扫入后的余额 − 本周期自由支配支出 − 本周期买掉的条件项
    */
-  function expectedCangzheBalance(state, cycleKey) {
-    var opening = nz(state.cangzheOpening, nz(state.accounts.cangzhe, 0));
+  function expectedYuebaoBalance(state, cycleKey) {
+    var opening = nz(state.yuebaoOpening, nz(state.accounts.yuebao, 0));
     var list = entriesOfCycle(state, cycleKey);
     var spent = 0;
     for (var i = 0; i < list.length; i++) {
-      if (list[i].envelope === 'free') spent += nz(list[i].amount, 0);
+      if (entryAccount(list[i]) === 'yuebao') spent += nz(list[i].amount, 0);
     }
     return round2(opening - spent);
   }
 
+  /* 旧名兼容（内部已全部改用 expectedYuebaoBalance） */
+  function expectedCangzheBalance(state, cycleKey) { return expectedYuebaoBalance(state, cycleKey); }
+
   /**
-   * 第 12 节对账：比较「农行 + 攒着」的合计。
+   * 第 12 节对账（第五轮加招行总欠款）：比较「农行 − 招行总欠款 + 余额宝」的合计。
    * 记账算出的应有合计 vs 用户填的实际合计；对不上提示补记差额。
-   * 这样自由支配的钱无论从农行还是攒着付，都不会造成误判。
+   * 招行信用卡每月 17 日从农行自动全额扣款 —— 钱还在农行里、但已经被划走了，
+   * 所以实际余额要先减去招行总欠款再比。
    */
   function reconcileTotal(state, input) {
     var cycleKey = (input.cycle && input.cycle.key) || deriveCycle(state).key;
     var expectAbc = expectedAbcBalance(state, cycleKey);
-    var expectCang = expectedCangzheBalance(state, cycleKey);
-    var expectTotal = round2(expectAbc + expectCang);
+    var expectYue = expectedYuebaoBalance(state, cycleKey);
+    var expectTotal = round2(expectAbc - nz(state.cycleCmbOpening, 0) + expectYue);
+    var cmbDebt = round2(nz(input.cmbDebt, nz(state.cmbDebt, 0)));
 
     var abcActual = isNum(input.abcActual) ? round2(input.abcActual) : null;
-    var cangActual = isNum(input.cangzheActual) ? round2(input.cangzheActual) : null;
-    var hasBoth = (abcActual !== null && cangActual !== null);
+    var yueActual = isNum(input.yuebaoActual) ? round2(input.yuebaoActual) : null;
+    var hasBoth = (abcActual !== null && yueActual !== null);
 
-    var actualTotal = hasBoth ? round2(abcActual + cangActual) : null;
+    var actualTotal = hasBoth ? round2(abcActual - cmbDebt + yueActual) : null;
     var diff = hasBoth ? round2(actualTotal - expectTotal) : null;
 
     return {
    expectedAbc: expectAbc,
-      expectedCangzhe: expectCang,
+      expectedYuebao: expectYue,
+      expectedCangzhe: expectYue,
+      cmbDebt: cmbDebt,
       expectedTotal: expectTotal,
       abcActual: abcActual,
-      cangzheActual: cangActual,
+      yuebaoActual: yueActual,
       actualTotal: actualTotal,
    diff: diff,
       ready: hasBoth,
@@ -1857,145 +2045,215 @@ if (oi.id === pi.id && oi.cycleKey !== pi.cycleKey) {
   }
 
   /**
-   * 生成转账清单。固定顺序：
-   *   农行↔攒着（调到缓冲额）→ 工行→农行 → 工行→交行（应急金）→ 工行→目标账户 → 工行→定期
-   * 工资扣掉农行拨款后不够时，优先应急金 → 目标 → 定期，拨不足的差额顺延。
+   * 生成转账清单（第五轮）。固定顺序：
+   *   1 农行 ↔ 余额宝（调到缓冲额）—— 假期周期换成「从攒着取出 X 元转到农行」
+   *   2 工行 → 农行（假期周期：实发全部转入）
+   *   3 工行 → 交行（应急金）
+   *   4 工行 → 目标账户
+   *   5 工行 → 攒着（假期周转）—— 余额已够覆盖下个假期周期缺口时自动跳过
+   *   6 工行 → 定期（剩下的全部）
+   * 工资扣掉农行拨款后不够时，应急金 → 目标 → 周转的欠额顺延；定期没有欠额。
+   * 假期周期：应急金、目标、周转、定期这一期都为 0，欠额同样顺延。
    */
   function paydayPlan(state, input) {
     input = input || {};
     var cycle = input.cycle || deriveCycle(state);
     var salary = round2(nz(input.salary, 0));
+    var paydayDate = input.paydayDate || state.today;
+    var newCycleKey = monthKey(paydayDate);
+    var holidayCycle = isHolidayCycle(state, newCycleKey);
     var abcActual = round2(nz(input.abcActual, nz(state.accounts.abc, 0)));
+    var cmbDebt = round2(nz(input.cmbDebt, nz(state.cmbDebt, 0)));
     var bufferTarget = nz(state.settings.plan.abcBuffer, 350);
     var env = state.settings.envelopes;
     var toBank = round2(sum([
       { v: env.food }, { v: env.sub }, { v: env.mobility }, { v: env.free }
     ], function (x) { return x.v; }));
+    var holidayFund = round2(nz(state.accounts.holiday, 0));
+    var perTransfer = nz((state.settings.holiday || {}).transferPerCycle, 300);
 
     var steps = [];
 
-    // 1 农行 ↔ 攒着
-    var diff = round2(bufferTarget - abcActual);
-    steps.push({
-      id: 'abc-cangzhe',
-      order: 1,
-      title: '农行 ↔ 攒着',
-      detail: '把农行调到 ' + money(bufferTarget) + (diff >= 0 ? '，不够的从攒着补' : '，多的扫进攒着'),
-      amount: round2(Math.abs(diff)),
-      direction: diff >= 0 ? '攒着 → 农行' : '农行 → 攒着',
-      from: diff >= 0 ? '攒着' : '农行',
-      to: diff >= 0 ? '农行' : '攒着',
-      done: diff === 0,
-      shortfall: 0
-    });
+    // 1 农行 ↔ 余额宝 / 假期周期：从攒着取出
+    var diff = round2(bufferTarget + cmbDebt - abcActual);
+    var holidayTake = 0, holidayFromFund = 0, holidayFromYuebao = 0;
+    if (holidayCycle) {
+      holidayTake = round2(Math.max(0, toBank - salary));
+      holidayFromFund = round2(Math.min(holidayTake, holidayFund));
+      holidayFromYuebao = round2(holidayTake - holidayFromFund);
+      steps.push({
+        id: 'holiday-abc',
+        order: 1,
+        title: '从攒着取出 ' + money(holidayTake) + ' 转到农行',
+        detail: '假期周期实发 ' + money(salary) + '，四信封要 ' + money(toBank) +
+          '，差 ' + money(holidayTake) + '：假期周转出 ' + money(holidayFromFund) +
+          (holidayFromYuebao > 0 ? '，不够的 ' + money(holidayFromYuebao) + ' 从余额宝补' : ''),
+        amount: holidayTake,
+        direction: holidayFromYuebao > 0 ? '假期周转 + 余额宝 → 农行' : '假期周转 → 农行',
+        from: '攒着（假期周转）', to: '农行',
+        done: holidayTake === 0,
+        shortfall: 0,
+        holidayTake: holidayTake, holidayFromFund: holidayFromFund, holidayFromYuebao: holidayFromYuebao
+      });
+    } else {
+      steps.push({
+        id: 'abc-yuebao',
+        order: 1,
+        title: '农行 ↔ 余额宝',
+        detail: '农行扣除招行总欠款 ' + money(cmbDebt) + ' 后留 ' + money(bufferTarget) + (diff >= 0 ? '，不够的从余额宝补' : '，多的扫进余额宝'),
+        amount: round2(Math.abs(diff)),
+        direction: diff >= 0 ? '余额宝 → 农行' : '农行 → 余额宝',
+        from: diff >= 0 ? '余额宝' : '农行',
+        to: diff >= 0 ? '农行' : '余额宝',
+        done: diff === 0,
+        shortfall: 0
+      });
+    }
 
-    // 2 工行 → 农行
+    // 2 工行 → 农行（假期周期：实发全部转入）
     steps.push({
       id: 'icbc-abc', order: 2,
       title: '工行 → 农行',
-      detail: '四个花钱信封满额 ' + money(toBank) + '，加上缓冲 ' + money(bufferTarget),
-      amount: toBank, direction: '工行 → 农行', from: '工行', to: '农行',
+      detail: holidayCycle
+        ? '假期周期：实发 ' + money(salary) + ' 全部转入农行'
+        : '四个花钱信封满额 ' + money(toBank) + '，加上缓冲 ' + money(bufferTarget),
+      amount: holidayCycle ? Math.max(0, salary) : toBank,
+      direction: '工行 → 农行', from: '工行', to: '农行',
       done: false, shortfall: 0
     });
 
     // 3 工行 → 交行（应急金）
     var em = emergencyPlan(state);
+    var carry = state.paydayCarry || {};
+    var emWant = round2(Math.min(Math.max(0, em.target - em.balance), em.amount + nz(carry.emergency, 0)));
     steps.push({
       id: 'icbc-jiaohang', order: 3,
       title: '工行 → 交行',
-      detail: em.touched
-        ? '应急金这个周期动用过，一次补到 ' + money(em.target)
-        : '没动过，拨 ' + money(em.amount) + '，还差 ' + money(Math.max(0, em.target - em.balance - em.amount)),
-      amount: em.amount, direction: '工行 → 交行', from: '工行', to: '交行',
-      done: false, shortfall: 0
+      detail: holidayCycle
+        ? '假期周期本笔为 0，应急金欠 ' + money(emWant) + '，顺延到下个发薪日'
+        : (em.touched
+          ? '应急金这个周期动用过，一次补到 ' + money(em.target)
+          : '没动过，拨 ' + money(emWant) + '（含上期欠额），还差 ' + money(Math.max(0, em.target - em.balance - emWant))),
+      amount: holidayCycle ? 0 : emWant,
+      shortfall: holidayCycle ? emWant : 0,
+      direction: '工行 → 交行', from: '工行', to: '交行',
+      done: false
     });
 
     // 4 工行 → 目标账户
     var plans = goalPlans(state);
     var activeGoal = null;
     for (var g = 0; g < plans.length; g++) { if (!plans[g].done) { activeGoal = plans[g]; break; } }
+    var goalWant = activeGoal ? round2(Math.min(activeGoal.remain, activeGoal.perCycle + nz(carry.goal, 0))) : 0;
     steps.push({
       id: 'icbc-goal', order: 4,
       title: '工行 → 目标账户',
-      detail: activeGoal
-        ? activeGoal.name + '还差 ' + money(activeGoal.remain) + '，本周期应拨 ' + money(activeGoal.perCycle)
-        : '没有进行中的大目标',
-      amount: activeGoal ? activeGoal.perCycle : 0,
+      detail: holidayCycle
+        ? '假期周期本笔为 0' + (goalWant > 0 ? '，目标账户欠 ' + money(goalWant) + '，顺延到下个发薪日' : '，没有进行中的大目标')
+        : (activeGoal
+          ? activeGoal.name + '还差 ' + money(activeGoal.remain) + '，本周期应拨 ' + money(activeGoal.perCycle)
+          : '没有进行中的大目标'),
+      amount: holidayCycle ? 0 : goalWant,
+      shortfall: holidayCycle ? goalWant : 0,
       direction: '工行 → 目标账户', from: '工行', to: '目标账户',
-      done: false, shortfall: 0
+      done: false
     });
 
-    // 5 工行 → 定期（剩下的全部）
-    var remainPool = round2(salary - toBank);
+    // 5 工行 → 攒着（假期周转）：余额已够覆盖下个假期周期缺口时自动跳过
+    var gap = holidayGap(state);
+    var nextHol = nextHolidayKey(state, newCycleKey);
+    var skipTransfer = !holidayCycle && !!nextHol && holidayFund >= gap;
+    var holidayWant = round2(perTransfer + nz(carry.holiday, 0));
     steps.push({
-      id: 'icbc-deposit', order: 5,
+      id: 'icbc-holiday', order: 5,
+      title: '工行 → 攒着（假期周转）',
+      detail: holidayCycle
+        ? '假期周期本笔为 0，周转欠 ' + money(holidayWant) + '，顺延到下个发薪日'
+        : (skipTransfer
+          ? '已跳过：攒着（假期周转）' + money(holidayFund) + ' 已够覆盖 ' + cycleLabel(nextHol) + '的缺口 ' + money(gap)
+          : '拨 ' + money(holidayWant) + ' 进假期周转金，供 ' + (nextHol ? cycleLabel(nextHol) : '以后的') + '假期周期补缺口'),
+      amount: holidayCycle ? 0 : (skipTransfer ? 0 : holidayWant),
+      shortfall: holidayCycle ? holidayWant : 0,
+      direction: '工行 → 攒着（假期周转）', from: '工行', to: '攒着（假期周转）',
+      done: false
+    });
+
+    // 6 工行 → 定期（剩下的全部）
+    var remainPool = round2(salary - steps[1].amount);
+    steps.push({
+      id: 'icbc-deposit', order: 6,
       title: '工行 → 定期',
-      detail: '剩下全部转进定期，生成一张一年期存单',
-      amount: Math.max(0, remainPool), direction: '工行 → 定期', from: '工行', to: '定期',
+      detail: holidayCycle
+        ? '假期周期本笔为 0（定期是剩下的全部，没有欠额）'
+        : '剩下全部转进定期，生成一张一年期存单',
+      amount: holidayCycle ? 0 : Math.max(0, remainPool),
+      direction: '工行 → 定期', from: '工行', to: '定期',
       done: false, shortfall: 0, isRemainder: true
     });
 
-// 工资不够时的优先级：应急金 → 目标 → 定期
-    // 第 12 节：每一笔都不能超过工资里还没分出去的钱；实发连 3090 都不够时后三笔全为 0。
-var shortfall = 0;
+    // 工资不够时的优先级：应急金 → 目标 → 周转；定期没有欠额
+    var shortfall = 0;
     var abcShort = 0;      // 农行拨不满的差额（不顺延，只是提示）
-    var carry = 0;         // 应急金 + 目标的顺延额
-    if (remainPool < 0) {
+    if (!holidayCycle && remainPool < 0) {
       shortfall = round2(-remainPool);
       abcShort = shortfall;
       steps[1].amount = 0;
       steps[1].shortfall = 0;              // 农行不顺延
       steps[1].detail = '工资不够，本周期信封拨不满，差 ' + money(shortfall);
-/* 后面三笔全部为 0；只有应急金和目标的欠额顺延，定期没有。
-           注意：应急金/目标的欠额要在这之前先把「想拨多少」记下来 ——
-           steps[2].shortfall 初始是 0（目标账户没目标时 want 就是 0）。*/
+      /* 后面三笔全部为 0；只有应急金、目标、周转的欠额顺延，定期没有。 */
       steps[2].shortfall = steps[2].amount;                 // 应急金想拨多少就欠多少
-   steps[2].amount = 0;
-      steps[2].detail = '工资不够 3090，本笔为 0，应急金欠 ' + money(steps[2].shortfall) + '，顺延到下个发薪日';
+      steps[2].amount = 0;
+      steps[2].detail = '工资不够 ' + money(toBank) + '，本笔为 0，应急金欠 ' + money(steps[2].shortfall) + '，顺延到下个发薪日';
       steps[3].shortfall = steps[3].amount;                 // 同理
       steps[3].amount = 0;
-      steps[3].detail = '工资不够 3090，本笔为 0' +
+      steps[3].detail = '工资不够 ' + money(toBank) + '，本笔为 0' +
         (steps[3].shortfall > 0 ? '，目标账户欠 ' + money(steps[3].shortfall) + '，顺延到下个发薪日' : '，没有进行中的大目标');
-    steps[4].amount = 0;
-      steps[4].shortfall = 0;            // 定期是「剩下的全部」，没有欠额
-      steps[4].detail = '工资不够 3090，本笔为 0（定期是剩下的全部，没有欠额）';
-    } else {
+      steps[4].shortfall = steps[4].amount;                 // 周转同理
+      steps[4].amount = 0;
+      steps[4].detail = '工资不够 ' + money(toBank) + '，本笔为 0，周转欠 ' + money(steps[4].shortfall) + '，顺延到下个发薪日';
+      steps[5].amount = 0;
+      steps[5].shortfall = 0;            // 定期是「剩下的全部」，没有欠额
+      steps[5].detail = '工资不够 ' + money(toBank) + '，本笔为 0（定期是剩下的全部，没有欠额）';
+    } else if (!holidayCycle) {
       var pool = remainPool;
-  var order = ['icbc-jiaohang', 'icbc-goal'];
-      var carry = 0;
+      var order = ['icbc-jiaohang', 'icbc-goal', 'icbc-holiday'];
       for (var oi = 0; oi < order.length; oi++) {
- var st = null;
+        var st = null;
         for (var si = 0; si < steps.length; si++) if (steps[si].id === order[oi]) st = steps[si];
         var want = st.amount;
         var give = round2(Math.max(0, Math.min(pool, want)));
         var lack = round2(want - give);
-     st.amount = give;
+        st.amount = give;
         if (lack > 0) {
           st.shortfall = lack;
           st.detail += '；工资不够，差额 ' + money(lack) + ' 顺延到下个发薪日';
-          carry = round2(carry + lack);
         }
         pool = round2(pool - give);
       }
-steps[4].amount = round2(Math.max(0, pool));
-      steps[4].shortfall = 0;      // 定期是「剩下的全部」，没有欠额可言
+      steps[5].amount = round2(Math.max(0, pool));
+      steps[5].shortfall = 0;      // 定期是「剩下的全部」，没有欠额可言
     }
 
-    // 对账（第 12 节）：比较「农行 + 攒着」的合计
-    var rec = reconcileTotal(state, { cycle: cycle, abcActual: abcActual, cangzheActual: input.cangzheActual });
+    // 对账（第 12 节，第五轮）：比较「农行 − 招行总欠款 + 余额宝」的合计
+    var rec = reconcileTotal(state, { cycle: cycle, abcActual: abcActual, yuebaoActual: input.yuebaoActual, cmbDebt: cmbDebt });
 
     return {
       cycle: cycle,
       salary: salary,
       abcActual: abcActual,
+      cmbDebt: cmbDebt,
       toBank: toBank,
       bufferTarget: bufferTarget,
+      isHolidayCycle: holidayCycle,
+      holidayTake: holidayTake,
+      holidayFromFund: holidayFromFund,
+      holidayFromYuebao: holidayFromYuebao,
       steps: steps,
       emergency: em,
       goal: activeGoal,
       abcTopUp: round2(Math.abs(diff)),
-      abcTopUpDirection: diff >= 0 ? '攒着 → 农行' : '农行 → 攒着',
-      cangzheDelta: diff >= 0 ? round2(-diff) : round2(-diff),
+      abcTopUpDirection: diff >= 0 ? '余额宝 → 农行' : '农行 → 余额宝',
+      yuebaoDelta: round2(-diff),
 reconcile: {
       expected: rec.expectedAbc,
         expectedTotal: rec.expectedTotal,
@@ -2005,13 +2263,13 @@ reconcile: {
         matched: rec.balanced,
         hint: rec.ready
           ? (rec.balanced ? '' : '合计差 ' + money(rec.diff) + '，请把差额补记到具体信封')
-          : '把农行和攒着的实际余额都填上才能对账'
+          : '把农行和余额宝的实际余额都填上才能对账'
       },
 reconcileTotal: rec,
-      // 只有应急金和目标的欠额顺延；农行拨不满和定期都不顺延（第 12 节）
+      // 只有应急金、目标、周转的欠额顺延；农行拨不满和定期都不顺延（第 12 节）
       abcShortfall: abcShort,
-      totalOut: round2(toBank + steps[2].amount + steps[3].amount + steps[4].amount),
-      carriedOver: round2(steps[2].shortfall + steps[3].shortfall)
+      totalOut: round2(steps[1].amount + steps[2].amount + steps[3].amount + steps[4].amount + steps[5].amount),
+      carriedOver: round2(steps[2].shortfall + steps[3].shortfall + steps[4].shortfall)
     };
   }
 
@@ -2118,7 +2376,7 @@ var advice = [];
       bought: bought,
       boughtRecords: blog.filter(function (r) { return r.cycleKey === cycleKey; }),
       deferred: deferred,
-      savings: { cangzhe: env.cangzhe, abc: env.abcBalance, deposit: sum(depositPlans(state), function (d) { return d.principal; }) },
+      savings: { yuebao: env.yuebao, abc: env.abcBalance, deposit: sum(depositPlans(state), function (d) { return d.principal; }) },
       emergency: em,
       goals: goals,
       advice: advice
@@ -2131,16 +2389,30 @@ var advice = [];
     var next = clone(state);
     var paydayDate = input.paydayDate || state.today;
     var cycle = plan.cycle;
+    if (isNum(input.yuebaoActual)) next.accounts.yuebao = round2(input.yuebaoActual);
 
-    // 农行 ↔ 攒着
-    var topUp = plan.abcTopUp;
-    if (plan.abcTopUpDirection === '攒着 → 农行') next.accounts.cangzhe = round2(nz(next.accounts.cangzhe, 0) - topUp);
-    else next.accounts.cangzhe = round2(nz(next.accounts.cangzhe, 0) + topUp);
+    // 步骤 1：农行 ↔ 余额宝（普通周期）；假期周期从攒着（假期周转）取，不够的从余额宝补
+    var step1 = plan.steps[0];
+    if (plan.isHolidayCycle) {
+      next.accounts.holiday = round2(nz(next.accounts.holiday, 0) - nz(step1.holidayFromFund, 0));
+      if (nz(step1.holidayFromYuebao, 0) > 0) {
+        next.accounts.yuebao = round2(nz(next.accounts.yuebao, 0) - nz(step1.holidayFromYuebao, 0));
+      }
+    } else {
+      var topUp = plan.abcTopUp;
+      if (plan.abcTopUpDirection === '余额宝 → 农行') next.accounts.yuebao = round2(nz(next.accounts.yuebao, 0) - topUp);
+      else next.accounts.yuebao = round2(nz(next.accounts.yuebao, 0) + topUp);
+    }
 
     // 工行转出
     var toBank = sum([plan.steps[1]], function (s) { return s.amount; });
-    next.accounts.abc = round2(bufferOf(next) + toBank);
-    next.cycleAbcOpening = round2(bufferOf(next) + toBank);
+    if (plan.isHolidayCycle) {
+      // 假期周期：实发全部进农行，再加上从攒着（假期周转）/余额宝补进来的部分
+      next.accounts.abc = round2(nz(plan.abcActual, nz(state.accounts.abc, 0)) + step1.amount + toBank);
+    } else {
+      next.accounts.abc = round2(bufferOf(next) + nz(plan.cmbDebt, 0) + toBank);
+    }
+    next.cycleAbcOpening = next.accounts.abc;
     next.accounts.icbc = round2(nz(next.accounts.icbc, 0) + nz(plan.salary, 0) - toBank
       - sum(plan.steps.slice(2), function (s) { return s.amount; }));
 
@@ -2159,22 +2431,49 @@ var advice = [];
       next.accounts.goal = round2(nz(next.accounts.goal, 0) + plan.steps[3].amount);
     }
 
-    // 定期：勾掉就生成一张一年期存单
+    // 假期周转金：工行 → 攒着（假期周转）
     if (plan.steps[4].amount > 0) {
-      next.deposits = next.deposits || [];
-      next.deposits.push(makeDeposit(next, plan.steps[4].amount, paydayDate));
-      next.accounts.deposit = round2(nz(next.accounts.deposit, 0) + plan.steps[4].amount);
+      next.accounts.holiday = round2(nz(next.accounts.holiday, 0) + plan.steps[4].amount);
     }
 
-    /* 第 12 节：对上（或补记完）后，农行和攒着都以实际余额为准。
-       先按转账清单算出结果，再用用户填的实际余额覆盖，保证下次对账基数正确。 */
-    if (isNum(input.abcActual)) {
-      next.accounts.abc = round2(input.abcActual);
-      next.cycleAbcOpening = round2(input.abcActual);
+    // 定期：勾掉就生成一张一年期存单
+    if (plan.steps[5].amount > 0) {
+      next.deposits = next.deposits || [];
+      next.deposits.push(makeDeposit(next, plan.steps[5].amount, paydayDate));
+      next.accounts.deposit = round2(nz(next.accounts.deposit, 0) + plan.steps[5].amount);
     }
-    if (isNum(input.cangzheActual)) next.accounts.cangzhe = round2(input.cangzheActual);
-    // 下一周期的攒着期初，用来对账
-    next.cangzheOpening = round2(nz(next.accounts.cangzhe, 0));
+
+    // 招行总欠款：对账时填的数，留作下期对账基数
+    next.cmbDebt = round2(nz(input.cmbDebt, nz(state.cmbDebt, 0)));
+
+    /* 第 12 节：对上（或补记完）后，农行和余额宝都以实际余额为准。
+       先按转账清单算出结果，再用用户填的实际余额覆盖，保证下次对账基数正确。 */
+    next.cycleCmbOpening = next.cmbDebt;
+    next.paydayCarry = {
+      emergency: nz(plan.steps[2].shortfall, 0),
+      goal: nz(plan.steps[3].shortfall, 0),
+      holiday: nz(plan.steps[4].shortfall, 0)
+    };
+    next.lastHolidayShortfall = plan.holidayFromYuebao > 0 ? {
+      cycleKey: monthKey(paydayDate), amount: plan.holidayFromYuebao
+    } : null;
+    next.transfers = next.transfers || [];
+    plan.steps.forEach(function (step) {
+      if (step.id === 'holiday-abc') {
+        [
+          { suffix: 'fund', from: '攒着（假期周转）', amount: step.holidayFromFund },
+          { suffix: 'yuebao', from: '余额宝', amount: step.holidayFromYuebao }
+        ].forEach(function (part) {
+          if (part.amount > 0) next.transfers.push({ id: 'tr-' + paydayDate + '-' + step.id + '-' + part.suffix,
+            date: paydayDate, title: part.from + ' → 农行', from: part.from, to: '农行', amount: part.amount, detail: step.detail });
+        });
+      } else if (step.amount > 0) next.transfers.push({
+        id: 'tr-' + paydayDate + '-' + step.id, date: paydayDate, title: step.title,
+        from: step.from, to: step.to, amount: step.amount, detail: step.detail
+      });
+    });
+    // 下一周期的余额宝期初，用来对账
+    next.yuebaoOpening = round2(nz(next.accounts.yuebao, 0));
 
     // 记下本次发薪日期，开始新周期
     next.paydayRecords = (next.paydayRecords || []).concat([paydayDate]);
@@ -2210,9 +2509,9 @@ var advice = [];
   function exportPayload(state) {
     var cycle = deriveCycle(state);
     var plan = planView(state);
-return {
+    return Object.assign({}, clone(state), {
       app: 'jizhang',
-      version: 2,
+      version: 3,
       exportedAt: new Date().toISOString(),
       today: state.today,
       cycle: { key: cycle.key, label: cycle.label, start: cycle.start, bufferMode: cycle.bufferMode },
@@ -2229,7 +2528,7 @@ return {
       emergency: state.emergency,
       paydayRecords: state.paydayRecords,
       cycleAbcOpening: state.cycleAbcOpening,
-      cangzheOpening: state.cangzheOpening,
+      yuebaoOpening: state.yuebaoOpening,
       lastPayday: state.lastPayday,
       lastPaydayFlowAt: state.lastPaydayFlowAt,
       boughtLog: state.boughtLog || [],
@@ -2242,7 +2541,7 @@ return {
         rows: plan.forecast.rows
       },
       alerts: alerts(state)
-    };
+    });
   }
 
   /* ==================================================================
@@ -2409,6 +2708,11 @@ return {
     expectedCangzheBalance: expectedCangzheBalance, reconcileTotal: reconcileTotal,
     cycleOfKey: cycleOfKey, roundDayHalfUp: roundDayHalfUp,
     buildReview: buildReview,
+    /* 第五轮：账户 / 假期周期 / 订阅自动入账 */
+    ACCOUNT_NAMES: ACCOUNT_NAMES, accountName: accountName, entryAccount: entryAccount,
+    envelopeTotal: envelopeTotal, isHolidayCycle: isHolidayCycle, nextHolidayKey: nextHolidayKey,
+    holidayGap: holidayGap, dueSubscriptions: dueSubscriptions,
+    expectedYuebaoBalance: expectedYuebaoBalance,
     /* 导出 */
     exportPayload: exportPayload,
     /* 首页 */

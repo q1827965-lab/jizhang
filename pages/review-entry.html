@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>核对流水</title><link rel="manifest" href="../manifest.webmanifest"><link rel="stylesheet" href="../css/app.css"></head>
+<body><div class="phone phone--tall"><div class="scroll" id="scroll"></div></div>
+<script src="../js/calc.js"></script><script src="../js/store.js"></script><script src="../js/ui.js"></script>
+<script>
+(function () {
+  var root = document.getElementById('scroll'), id = UI.qs('id'), s = Store.state();
+  var src = (s.entries || []).filter(function (e) { return e.id === id; })[0];
+  var envs = { food: '吃饭', sub: '订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
+  function options(selected) {
+    return s.categories.map(function (g) { return '<optgroup label="' + UI.esc(g.name) + '">' + g.children.map(function (c) {
+      return '<option value="' + UI.esc(c.id) + '"' + (c.id === selected ? ' selected' : '') + '>' + UI.esc(c.name) + '</option>';
+    }).join('') + '</optgroup>'; }).join('');
+  }
+  function row(amount, cat, env, note) {
+    return '<section class="card entry-part"><div class="field"><label>金额（' + (src.amount < 0 ? '收入' : '支出') + '）</label><input class="input part-amount" inputmode="decimal" value="' + amount + '"></div>' +
+      '<div class="field"><label>分类</label><select class="input part-cat">' + options(cat) + '</select></div>' +
+      '<div class="field"><label>信封</label><select class="input part-env">' + Object.keys(envs).map(function (key) { return '<option value="' + key + '"' + (key === env ? ' selected' : '') + '>' + envs[key] + '</option>'; }).join('') + '</select></div>' +
+      '<div class="field"><label>备注</label><input class="input part-note" value="' + UI.esc(note || '') + '"></div>' +
+      (src.pending ? '<button class="btn btn--muted removePart" type="button">移除这行</button>' : '') + '</section>';
+  }
+  root.innerHTML = '<div class="topbar topbar--center"><a class="icon-btn" href="flow.html" aria-label="返回">' + UI.icon('left', 18) + '</a><h1>' + (src && src.pending ? '拆分待核对' : '编辑流水') + '</h1><span style="width:40px"></span></div>';
+  if (!src) { root.insertAdjacentHTML('beforeend', '<div class="hint">找不到这笔流水</div>'); return; }
+  root.insertAdjacentHTML('beforeend', '<div class="hint">' + UI.esc(src.date) + ' · ' + UI.esc(Calc.accountName(Calc.entryAccount(src))) + ' · 原金额 ' + UI.money(Math.abs(src.amount)) +
+    (src.pending ? '。每行选分类和信封，合计须等于原金额，日期和出钱账户不变。' : '') + '</div><div id="parts">' + row(Math.abs(src.amount), src.catId, src.envelope === 'pending' ? 'food' : src.envelope, src.note) + '</div>' +
+    (src.pending ? '<button class="btn btn--outline btn--block" id="addPart">再拆一笔</button>' : '') + '<button class="btn btn--block" id="saveEntry">保存</button>');
+  function bindRows() {
+    UI.$$('.entry-part', root).forEach(function (section) {
+      var cat = section.querySelector('.part-cat');
+      cat.onchange = function () { section.querySelector('.part-env').value = Calc.defaultEnvelope(s, cat.value); };
+      var remove = section.querySelector('.removePart');
+      if (remove) remove.onclick = function () { section.remove(); };
+    });
+  }
+  bindRows();
+  UI.on(root, '#addPart', 'click', function () { document.getElementById('parts').insertAdjacentHTML('beforeend', row('', 'c-food-main', 'food', '')); bindRows(); });
+  UI.on(root, '#saveEntry', 'click', function () {
+    try {
+      var parts = UI.$$('.entry-part', root).map(function (section) {
+        var amount = Number(section.querySelector('.part-amount').value);
+        if (!isFinite(amount) || amount <= 0) throw new Error('请输入大于 0 的金额');
+        return { amount: Calc.round2(amount * (src.amount < 0 ? -1 : 1)), catId: section.querySelector('.part-cat').value, envelope: section.querySelector('.part-env').value, note: section.querySelector('.part-note').value };
+      });
+      if (src.pending) Store.splitPendingEntry(id, parts); else Store.updateEntry(id, parts[0]);
+      if (Store.lastWriteOk()) location.href = 'flow.html?date=' + encodeURIComponent(src.date);
+    } catch (e) { UI.toast(e.message); }
+  });
+})();
+</script></body></html>

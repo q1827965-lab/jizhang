@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>账户余额</title><link rel="manifest" href="../manifest.webmanifest"><link rel="stylesheet" href="../css/app.css"></head>
+<body><div class="phone"><div class="scroll" id="scroll"></div></div>
+<script src="../js/calc.js"></script><script src="../js/store.js"></script><script src="../js/ui.js"></script>
+<script>
+(function () {
+  var root = document.getElementById('scroll');
+  function render() {
+    var s = Store.state(), cycle = Calc.deriveCycle(s);
+    var keys = Object.keys(s.accounts).concat(['jiaohang']);
+    root.innerHTML = '<div class="topbar topbar--center"><a class="icon-btn" href="more.html" aria-label="返回">' + UI.icon('left', 18) + '</a><h1>账户余额</h1><span style="width:40px"></span></div>' +
+      '<div class="hint">照银行或支付宝填实际余额。少的钱记待核对支出，多的钱记待核对收入，归入当前周期；复盘时可在流水中拆分。</div>' +
+      '<section class="card">' + keys.map(function (key) {
+        var expected = key === 'abc' ? Calc.expectedAbcBalance(s, cycle.key) : key === 'yuebao' ? Calc.expectedYuebaoBalance(s, cycle.key) : Store.accountBalance(s, key);
+        return '<div class="field"><label for="balance-' + key + '">' + UI.esc(Calc.accountName(key)) + ' <span class="hint">应有 ' + UI.money(expected) + '</span></label><input class="input" id="balance-' + key + '" data-account="' + key + '" inputmode="decimal" value="' + expected + '"></div>';
+      }).join('') + '</section><button class="btn btn--block" id="saveBalances">保存实际余额</button>';
+    UI.on(root, '#saveBalances', 'click', function () {
+      try {
+        var values = {};
+        UI.$$('[data-account]', root).forEach(function (el) {
+          if (el.value.trim() === '' || !isFinite(Number(el.value)) || Number(el.value) < 0) throw new Error('请填写不小于 0 的实际余额');
+          values[el.getAttribute('data-account')] = Number(el.value);
+        });
+        var result = Store.reconcileAccountBalances(values);
+        if (!Store.lastWriteOk()) return;
+        UI.toast(result.entries.length ? '已按实际余额更新，新增 ' + result.entries.length + ' 笔待核对流水' : '余额一致，未新增流水');
+        render();
+      } catch (e) { UI.toast(e.message); }
+    });
+  }
+  render();
+})();
+</script></body></html>
