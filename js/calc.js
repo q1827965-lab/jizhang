@@ -830,9 +830,14 @@ start: start,
    * 7. 自由支配余额预测（第 8 节 · 保守算法）
    * ================================================================== */
 
-  function scheduledIn(state, cycleKey) {
+  // 旧账中已经过期的未买项目，立即按当前周期预留；不在读取/预测时改写账目。
+  function scheduledCycleKey(item, currentKey) {
+    return item.cycleKey && item.cycleKey < currentKey ? currentKey : item.cycleKey;
+  }
+
+  function scheduledIn(state, cycleKey, currentKey) {
     return (state.planItems || []).filter(function (it) {
-      return it.type === 'scheduled' && it.cycleKey === cycleKey && !it.removed;
+      return it.type === 'scheduled' && scheduledCycleKey(it, currentKey) === cycleKey && !it.removed;
     });
   }
 
@@ -947,7 +952,7 @@ start: start,
     var rows = [];
     var bal = startBalance;
     for (var i = 0; i < keys.length; i++) {
-      var due = scheduledIn(state, keys[i]);
+      var due = scheduledIn(state, keys[i], cycle.key);
       var schedAmt = sum(due, function (it) { return it.amount; });
       var start = bal;
       var afterScheduled = round2(start - schedAmt);
@@ -1170,15 +1175,16 @@ start: start,
 
     var scheduled = (state.planItems || []).filter(function (it) {
       return it.type === 'scheduled' && !it.removed;
+    }).map(function (it) {
+      var key = scheduledCycleKey(it, cycle.key);
+      return {
+        id: it.id, name: it.name, amount: it.amount, type: 'scheduled',
+        cycleKey: key, label: cycleLabel(key),
+        shortLabel: monthLabel(key), note: it.note || ''
+      };
     }).sort(function (a, b) {
       if (a.cycleKey !== b.cycleKey) return a.cycleKey < b.cycleKey ? -1 : 1;
       return nz(b.amount, 0) - nz(a.amount, 0);
-    }).map(function (it) {
-      return {
-        id: it.id, name: it.name, amount: it.amount, type: 'scheduled',
-        cycleKey: it.cycleKey, label: cycleLabel(it.cycleKey),
-        shortLabel: monthLabel(it.cycleKey), note: it.note || ''
-      };
     });
 
     /* 负数周期：照计划付排定项时钱不够（第 8 节）。
@@ -2483,7 +2489,14 @@ var advice = [];
     next.cycleHistory = next.cycleHistory || [];
     next.cycleHistory.push(buildReview(next, cycle.key));
 
-    // 未付的排定项跨周期保留（付款周期到了才扣）
+    // 复盘存档后，未买且已过期的排定项顺延到新周期，继续在预测中预留。
+    // 只调整付款周期；不生成支出/已买记录，不扣账户余额。
+    var newCycleKey = monthKey(paydayDate);
+    (next.planItems || []).forEach(function (it) {
+      if (it.type === 'scheduled' && !it.removed && it.cycleKey && it.cycleKey < newCycleKey) {
+        it.cycleKey = newCycleKey;
+      }
+    });
     next.lastPayday = paydayDate;
     // 记下「流程完成的时间点」：发薪日当天的支出以它为界分到上一/新周期（第 12 节）
     next.lastPaydayFlowAt = paydayDate + 'T' + (input.flowTime || nowHMOf(input)) + ':00';

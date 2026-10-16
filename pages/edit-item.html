@@ -46,6 +46,10 @@
     pinned: !!item.pinned,
     buyBefore: item.buyBefore || ''
   };
+  var currentCycleKey = Calc.deriveCycle(S).key;
+  if (draft.type === 'scheduled' && draft.cycleKey && draft.cycleKey < currentCycleKey) {
+    draft.cycleKey = currentCycleKey;
+  }
 
   var body = document.getElementById('sheet');
 
