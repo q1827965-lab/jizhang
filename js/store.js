@@ -471,6 +471,60 @@ var Store = (function () {
     else s.accounts[account] = Calc.round2(accountBalance(s, account) + delta);
   }
 
+  /** 首次建账的基数；有财务历史后只走日常对账，不重写基数。 */
+  function openingBalancesAllowed(s) {
+    return !['entries', 'transfers', 'boughtLog', 'cycleHistory', 'subscriptionOccurrences', 'deposits'].some(function (key) {
+      return (s[key] || []).length > 0;
+    }) && !((s.emergency || {}).uses || []).length && !s.lastPaydayFlowAt && (s.paydayRecords || []).length <= 1;
+  }
+
+  function canSetOpeningBalances() { return openingBalancesAllowed(read()); }
+  var openingRetry = null; // 仅用于失败重试的磁盘快照，不写入账目。
+
+  function setOpeningBalances(input) {
+    var s = read();
+    if (!canSetOpeningBalances()) throw new Error('已有收支、转账或其他财务记录，不能重设起始余额。日常核对请使用「余额对账」。');
+    var date = input && input.date;
+    if (typeof date !== 'string' || !/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/.test(date) ||
+        Calc.ymd(Calc.parseYmd(date)) !== date || date > s.today) {
+      throw new Error('请选择有效的上次工资到账日期，不能晚于今天');
+    }
+    function money(value) {
+      if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '' ||
+          !isFinite(Number(value)) || Number(value) < 0) throw new Error('请填写不小于 0 的起始金额，没有余额请填 0');
+      if (Number(value) > Number.MAX_SAFE_INTEGER / 100) throw new Error('起始金额过大');
+      return Calc.round2(Number(value));
+    }
+    var keys = Object.keys(initialState().accounts);
+    var values = {};
+    keys.concat(['jiaohang']).forEach(function (key) { values[key] = money(input.accounts && input.accounts[key]); });
+    var debt = money(input.cmbDebt);
+    // 原始磁盘内容先备份；验证和备份失败均不修改缓存或账目。
+    var raw = localStorage.getItem(KEY);
+    if (raw !== null) {
+      var disk;
+      try { disk = JSON.parse(raw); } catch (e) { throw new Error('原账目无法解析，已停止设置起始余额'); }
+      if (!disk || disk.version !== SCHEMA_VERSION) throw new Error('账目版本已变化，请重新打开后再设置');
+      if (!openingBalancesAllowed(disk)) throw new Error('已有财务记录，不能重设起始余额，请重新打开页面并使用「余额对账」。');
+      if (JSON.stringify(fill(disk)) !== JSON.stringify(fill(s)) && (!openingRetry || openingRetry.raw !== raw)) {
+        throw new Error('账目有未保存或其他页面的更改，请先保存或重新打开后再设置');
+      }
+    }
+    requireBackup(raw === null ? JSON.stringify(s) : raw, SCHEMA_VERSION);
+    var next = Calc.clone(s);
+    keys.forEach(function (key) { next.accounts[key] = values[key]; });
+    next.emergency.balance = values.jiaohang;
+    next.cmbDebt = debt;
+    next.cycleAbcOpening = values.abc;
+    next.yuebaoOpening = values.yuebao;
+    next.cycleCmbOpening = debt;
+    next.paydayRecords = [date];
+    next.lastPayday = date;
+    var saved = write(next);
+    openingRetry = lastWriteOkFlag ? null : { raw: raw };
+    return saved;
+  }
+
   /** 记一笔 */
   function addEntry(draft) {
     var s = read();
@@ -1210,6 +1264,8 @@ var Store = (function () {
     updateEntry: updateEntry,
     recordPaydayDifference: recordPaydayDifference,
     accountBalance: accountBalance,
+    canSetOpeningBalances: canSetOpeningBalances,
+    setOpeningBalances: setOpeningBalances,
     saveSettings: saveSettings,
     cycleArchive: cycleArchive,
     exportJSON: exportJSON,

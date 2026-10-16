@@ -85,6 +85,21 @@
       '<button type="button" class="btn btn--muted removeSub">删除订阅设置</button></section>';
   }
 
+  function openingSection(S) {
+    if (!Store.canSetOpeningBalances()) return '<section class="group"><h2>起始余额设置</h2><div class="card"><p class="hint">已有收支、转账或其他财务记录，不能直接重设起始余额。</p><a class="btn btn--outline" href="' + UI.url('accounts.html') + '">前往余额对账</a></div></section>';
+    return '<section class="group"><h2>起始余额设置</h2><div class="card">' +
+      '<p class="hint">从上次工资到账后开始记账：填写工资到账后、之后的收支发生前，各账户当时已有的钱。若当时已经分配到其他账户，请填分配后的余额。</p>' +
+      '<p class="hint">这笔工资已包含在起始余额中，不要再记一次收入。保存起始余额不会新增收入、支出或待核对流水。保存后，再按实际日期补记此后的收支。</p>' +
+      '<p class="hint">补记工资到账当天、到账后的支出时，请在「这笔属于」选择这次工资对应的新周期。</p>' +
+      '<div class="field"><label for="openingDate">上次工资到账日期</label><input class="input" type="date" id="openingDate" max="' + S.today + '" value="' + UI.esc((S.paydayRecords || [])[0] || '') + '"></div>' +
+      Object.keys(Store.initialState().accounts).concat(['jiaohang']).map(function (key) {
+        return '<div class="field"><label for="opening-' + key + '">' + UI.esc(Calc.accountName(key)) + '起始余额</label><input class="input" id="opening-' + key + '" data-opening-account="' + key + '" inputmode="decimal" value="' + Store.accountBalance(S, key) + '"></div>';
+      }).join('') +
+      '<div class="field"><label for="openingDebt">招行信用卡起始总欠款</label><input class="input" id="openingDebt" inputmode="decimal" value="' + S.cmbDebt + '"><span class="hint">填写当时的欠款金额，没有填 0；欠款不算账户里的钱。</span></div>' +
+      '<p class="hint">开始录入收支或转账后，起始余额将锁定；之后请使用「余额对账」核对实际余额。保存前会自动保留原账目备份。</p>' +
+      '<button type="button" class="btn btn--block" id="saveOpening">保存起始余额</button></div></section>';
+  }
+
   function render() {
     var S = Store.state();
     var st = S.settings;
@@ -113,7 +128,7 @@ var shown = it.join ? v.join(', ') : v;
         '<h1>设置</h1><span style="width:40px"></span>' +
       '</div>' +
 
-      groups +
+      openingSection(S) + groups +
       '<section class="card"><div class="field"><label for="holidayCycles">标记假期周期</label><input class="input" id="holidayCycles" value="' + UI.esc(st.holiday.cycles.join(', ')) + '"></div><div class="hint">填 3,9 表示每年 3 月、9 月周期；也可填具体周期，如 2027-03。逗号分隔，留空表示没有假期周期。3 月、9 月周期对应 2 月、8 月工资。</div></section>' +
       '<section class="group"><h2>订阅清单</h2><div class="hint">到扣款日打开 App 会自动记账。年付额度仍按原有平摊规则；不足 31 天的月份按月底扣。删设置不删除已记流水。</div><div id="subscriptionRows">' + st.subscriptions.map(subscriptionRow).join('') + '</div><button class="btn btn--outline btn--block" id="addSub">新增订阅</button></section>' +
 
@@ -152,6 +167,17 @@ var shown = it.join ? v.join(', ') : v;
           '分类表和设置项默认值会保留 —— 这两样是 App 运行必须的，不算账目。</div>' +
         '<button type="button" class="btn btn--danger btn--block" id="reset">清空全部账目</button>' +
       '</section>';
+
+    UI.on(root, '#saveOpening', 'click', function () {
+      try {
+        var values = {};
+        UI.$$('[data-opening-account]', root).forEach(function (el) { values[el.getAttribute('data-opening-account')] = el.value; });
+        Store.setOpeningBalances({ date: document.getElementById('openingDate').value, accounts: values, cmbDebt: document.getElementById('openingDebt').value });
+        if (!Store.lastWriteOk()) return;
+        UI.toast('起始余额已保存，请补记该日期之后的收支，不要重复记这次工资');
+        // 不重建整个设置表单，保留其他尚未保存的设置输入。
+      } catch (e) { UI.toast(e.message); }
+    });
 
     UI.on(root, '#save', 'click', function () {
       try {

@@ -6,7 +6,7 @@
  *
  * 注意：**账目数据不在这里**，数据存在 localStorage，SW 不碰。
  */
-var CACHE = 'ledger-v3-scheduled-rollover-20261016';
+var CACHE = 'ledger-v3-opening-balances-20261016';
 var ASSETS = [
   './',
   './index.html',
