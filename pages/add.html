@@ -28,6 +28,9 @@
 
   /* 支持从别处带参数进来：日期 / 金额 / 分类 / 信封 / 备注 */
   var draft = {
+    kind: 'expense',
+    incomeCatId: 'c-income-subsidy',
+    account: 'icbc',
     date: UI.qs('date') || S.today,
     amount: UI.qsNum('amount') != null ? UI.qsNum('amount') : '',
     catId: UI.qs('catId') || 'c-food-main',
@@ -57,6 +60,10 @@
   var match = { hidden: true, result: null, answer: null, removeId: '' };
 
   function refreshMatch() {
+    if (draft.kind === 'income') {
+      match = { hidden: true, result: null, answer: null, removeId: '' };
+      return;
+    }
     /* 已经从「已经买了」确认过匹配时，不用再问 */
     if (fromPlanItem) {
       match.result = { applies: true, hit: null, candidates: [] };
@@ -100,6 +107,19 @@
   function render() {
     S = Store.state();
     env = Calc.envelopeState(S, cycle);
+    var isIncome = draft.kind === 'income';
+    var incomeHtml = '<div class="stack--sm"><span class="card-label">收入分类</span><div class="chips">' +
+      Calc.incomeCategories().map(function (c) {
+        return '<button type="button" class="chip" data-income-cat="' + c.id + '" aria-pressed="' + (draft.incomeCatId === c.id) + '">' + c.name + '</button>';
+      }).join('') + '</div></div>' +
+      (draft.incomeCatId === 'c-income-salary'
+        ? '<div class="hint">完成「发薪日」流程会自动记一笔工资收入并完成资金分配，工资不在这里重复入账。</div>'
+        : '<div class="field"><label for="incomeAccount">入账账户</label><select class="input" id="incomeAccount">' +
+          ['icbc', 'abc', 'yuebao', 'jiaohang'].map(function (key) {
+            return '<option value="' + key + '"' + (draft.account === key ? ' selected' : '') + '>' + Calc.accountName(key) + '</option>';
+          }).join('') + '</select></div>' +
+          '<div class="hint">只增加所选账户余额，不增加日常信封额度。自己的账户间转账不要记成收入。</div>' +
+          (draft.incomeCatId === 'c-income-yield' ? '<div class="hint">收益平时不逐笔记；每个周期由 AI 核对四个账户和随记流水后，每个账户各记一笔汇总收益。</div>' : ''));
 
     var cat = Calc.findCategory(S, draft.catId);
     var cat1Html = S.categories.map(function (g) {
@@ -127,7 +147,7 @@
       amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date, id: '__preview__'
     });
     var impactHtml = '';
-    if (draft.envelope === 'free' && Number(draft.amount) > 0 && impact.applies) {
+    if (!isIncome && draft.envelope === 'free' && Number(draft.amount) > 0 && impact.applies) {
       impactHtml = '<div class="callout callout--warn">' +
         '<span class="t">记下后的影响</span><span>' + UI.esc(impact.text) + '</span></div>';
     }
@@ -172,6 +192,11 @@
         '<a class="icon-btn icon-btn--flat" href="' + UI.url('flow.html') + '?date=' + draft.date + '" aria-label="关闭">' + UI.icon('close', 18) + '</a>' +
       '</div>' +
 
+      '<div class="chips" aria-label="收支类型">' +
+        '<button type="button" class="chip" data-kind="expense" aria-pressed="' + !isIncome + '">支出</button>' +
+        '<button type="button" class="chip" data-kind="income" aria-pressed="' + isIncome + '">收入</button>' +
+      '</div>' +
+
       '<div class="field">' +
         '<label for="amount">金额</label>' +
         '<div class="amount-row"><span class="cur">¥</span>' +
@@ -184,7 +209,7 @@
           UI.icon('down', 14) + '</button>' +
       '</div>' +
 
-      '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
+      (isIncome ? incomeHtml : '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
         '<span class="card-label">分类</span>' +
         '<div class="chips">' + cat1Html + '</div>' +
         '<div class="chips chips--box chips--sub">' + cat2Html + '</div>' +
@@ -194,11 +219,11 @@
         '<span class="card-label">出钱信封 · 按分类自动填，可改</span>' +
         '<div class="chips">' + envHtml + '</div>' +
         (draft.envelope === 'free' ? '<div class="hint">自由支配的钱从余额宝出，会影响排表预测。</div>' : '') +
-      '</div>' +
+      '</div>') +
 
       '<div class="field">' +
         '<label for="note">备注（可不填）</label>' +
-        '<input id="note" class="input" value="' + UI.esc(draft.note) + '" placeholder="比如 食堂午饭">' +
+        '<input id="note" class="input" value="' + UI.esc(draft.note) + '" placeholder="' + (isIncome ? '比如 交通补贴、周期收益汇总' : '比如 食堂午饭') + '">' +
       '</div>' +
 
       matchHtml +
@@ -208,13 +233,21 @@
       attribHtml +
 
       '<div class="sheet-actions">' +
-        '<button type="button" class="btn btn--lg btn--block" id="save">保存</button>' +
+        '<button type="button" class="btn btn--lg btn--block" id="save">' + (isIncome && draft.incomeCatId === 'c-income-salary' ? '去发薪日流程' : '保存') + '</button>' +
       '</div>';
 
     /* 交互 */
+    UI.on(body, '[data-kind]', 'click', function (el) {
+      draft.kind = el.getAttribute('data-kind'); refreshMatch(); render();
+    });
+    UI.on(body, '[data-income-cat]', 'click', function (el) {
+      draft.incomeCatId = el.getAttribute('data-income-cat'); render();
+    });
+    UI.on(body, '#incomeAccount', 'change', function (el) { draft.account = el.value; });
     UI.on(body, '#amount', 'input', function (el) {
       draft.amount = el.value === '' ? '' : Number(el.value);
       refreshMatch();
+      if (isIncome) return;
       var im = Calc.impactOfEntry(S, {
         amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date, id: '__preview__'
       });
@@ -284,8 +317,18 @@ UI.toast('日期不能晚于今天，将来要花的钱放进排表');
       inp.click();
     });
 UI.on(body, '#save', 'click', function () {
+      if (isIncome && draft.incomeCatId === 'c-income-salary') { location.href = UI.url('payday.html'); return; }
       var amt = Number(draft.amount);
-      if (!amt || amt <= 0) { UI.toast('先填金额'); return; }
+      if (!isFinite(amt) || Calc.round2(amt) <= 0) { UI.toast('请输入大于 0 的金额'); return; }
+      if (isIncome) {
+        if (draft.date > Store.today()) { UI.toast('日期不能晚于今天'); return; }
+        try {
+          Store.addEntry({ amount: -amt, catId: draft.incomeCatId, envelope: 'income', account: draft.account,
+            date: draft.date, time: draft.time, cycleKey: draft.cycleKey, note: draft.note });
+          if (Store.lastWriteOk()) location.href = UI.url('flow.html') + '?date=' + draft.date;
+        } catch (e) { UI.toast(e.message); }
+        return;
+      }
     /* 第 6 节：日期不能晚于今天（流水只记已经发生的花费） */
   if (draft.date && draft.date > Store.today()) {
      UI.toast('日期不能晚于今天，将来要花的钱放进排表');
@@ -300,6 +343,7 @@ if (!ensureMatchAnswered()) return;
          用户在这之前关闭或取消，排表项还在、也不会有半截记录。 */
       if (match.removeId && (match.answer === 'yes' || match.answer === 'confirmed')) {
         var res = Store.addEntry(draft);
+        if (!Store.lastWriteOk()) return;
         Store.removePlanItem(match.removeId, {
           bought: true,
           amount: amt,              // 实际金额，可能和排表里的估计金额不同
@@ -311,6 +355,7 @@ if (!ensureMatchAnswered()) return;
         return;
       }
       Store.addEntry(draft);
+      if (!Store.lastWriteOk()) return;
       location.href = UI.url('flow.html') + '?date=' + draft.date;
     });
   }

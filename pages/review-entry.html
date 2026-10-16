@@ -6,16 +6,21 @@
 (function () {
   var root = document.getElementById('scroll'), id = UI.qs('id'), s = Store.state();
   var src = (s.entries || []).filter(function (e) { return e.id === id; })[0];
+  var isIncome = src && src.envelope === 'income';
   var envs = { food: '吃饭', sub: '订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
   function options(selected) {
-    return s.categories.map(function (g) { return '<optgroup label="' + UI.esc(g.name) + '">' + g.children.map(function (c) {
+    var groups = isIncome ? [] : s.categories.slice();
+    if (isIncome || (src && src.amount < 0)) groups.push({ name: '收入', children: Calc.incomeCategories() });
+    return groups.map(function (g) { return '<optgroup label="' + UI.esc(g.name) + '">' + g.children.map(function (c) {
       return '<option value="' + UI.esc(c.id) + '"' + (c.id === selected ? ' selected' : '') + '>' + UI.esc(c.name) + '</option>';
     }).join('') + '</optgroup>'; }).join('');
   }
   function row(amount, cat, env, note) {
     return '<section class="card entry-part"><div class="field"><label>金额（' + (src.amount < 0 ? '收入' : '支出') + '）</label><input class="input part-amount" inputmode="decimal" value="' + amount + '"></div>' +
       '<div class="field"><label>分类</label><select class="input part-cat">' + options(cat) + '</select></div>' +
-      '<div class="field"><label>信封</label><select class="input part-env">' + Object.keys(envs).map(function (key) { return '<option value="' + key + '"' + (key === env ? ' selected' : '') + '>' + envs[key] + '</option>'; }).join('') + '</select></div>' +
+      (isIncome ? '<div class="field"><label>入账账户</label><select class="input part-account">' +
+        ['icbc', 'abc', 'yuebao', 'jiaohang'].map(function (key) { return '<option value="' + key + '"' + (key === Calc.entryAccount(src) ? ' selected' : '') + '>' + Calc.accountName(key) + '</option>'; }).join('') + '</select></div>'
+        : '<div class="field"><label>信封</label><select class="input part-env">' + Object.keys(envs).concat(src.amount < 0 ? ['income'] : []).map(function (key) { return '<option value="' + key + '"' + (key === env ? ' selected' : '') + '>' + (key === 'income' ? '收入（不占支出信封）' : envs[key]) + '</option>'; }).join('') + '</select></div>') +
       '<div class="field"><label>备注</label><input class="input part-note" value="' + UI.esc(note || '') + '"></div>' +
       (src.pending ? '<button class="btn btn--muted removePart" type="button">移除这行</button>' : '') + '</section>';
   }
@@ -27,7 +32,7 @@
   function bindRows() {
     UI.$$('.entry-part', root).forEach(function (section) {
       var cat = section.querySelector('.part-cat');
-      cat.onchange = function () { section.querySelector('.part-env').value = Calc.defaultEnvelope(s, cat.value); };
+      cat.onchange = function () { if (!isIncome) section.querySelector('.part-env').value = Calc.defaultEnvelope(s, cat.value); };
       var remove = section.querySelector('.removePart');
       if (remove) remove.onclick = function () { section.remove(); };
     });
@@ -39,7 +44,10 @@
       var parts = UI.$$('.entry-part', root).map(function (section) {
         var amount = Number(section.querySelector('.part-amount').value);
         if (!isFinite(amount) || amount <= 0) throw new Error('请输入大于 0 的金额');
-        return { amount: Calc.round2(amount * (src.amount < 0 ? -1 : 1)), catId: section.querySelector('.part-cat').value, envelope: section.querySelector('.part-env').value, note: section.querySelector('.part-note').value };
+        return { amount: Calc.round2(amount * (src.amount < 0 ? -1 : 1)), catId: section.querySelector('.part-cat').value,
+          envelope: isIncome ? 'income' : section.querySelector('.part-env').value,
+          account: isIncome ? section.querySelector('.part-account').value : undefined,
+          note: section.querySelector('.part-note').value };
       });
       if (src.pending) Store.splitPendingEntry(id, parts); else Store.updateEntry(id, parts[0]);
       if (Store.lastWriteOk()) location.href = 'flow.html?date=' + encodeURIComponent(src.date);

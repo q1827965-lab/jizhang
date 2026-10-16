@@ -528,15 +528,23 @@ var Store = (function () {
   /** 记一笔 */
   function addEntry(draft) {
     var s = read();
+    var amount = Number(draft.amount);
+    if (!isFinite(amount) || Calc.round2(amount) === 0) throw new Error('请输入有效金额');
+    var income = Calc.incomeCategory(draft.catId);
+    if (income) {
+      if (income.id === 'c-income-salary') throw new Error('工资请通过「发薪日」流程记录，避免重复入账');
+      if (amount >= 0) throw new Error('收入金额方向不正确');
+      if (['icbc', 'abc', 'yuebao', 'jiaohang'].indexOf(draft.account) < 0) throw new Error('请选择入账账户');
+    }
     var cycle = Calc.deriveCycle(s);
-    var envName = draft.envelope || Calc.defaultEnvelope(s, draft.catId, { cycle: cycle });
+    var envName = income ? 'income' : (draft.envelope || Calc.defaultEnvelope(s, draft.catId, { cycle: cycle }));
     var cat = Calc.findCategory(s, draft.catId);
     var date = draft.date || s.today;
     var entry = {
       id: uid('e'),
       date: date,
       time: draft.time || nowHM(),
-      amount: Calc.round2(Calc.nz(draft.amount, 0)),
+      amount: Calc.round2(amount),
       catId: cat.id,
       catName: cat.name,
       cat1: cat.parent,
@@ -559,7 +567,10 @@ var Store = (function () {
       var acc = draft.account || (entry.envelope === 'free' ? 'yuebao' : 'abc');
       changeAccount(next, acc, -entry.amount);
     }
-    return { state: write(next), entry: entry };
+    var saved = write(next);
+    // 表单保留输入供重试；失败的新增不留在缓存里，避免重试重复入账。
+    if (!lastWriteOk()) cache = s;
+    return { state: saved, entry: entry };
   }
 
   function removeEntry(id) {
@@ -989,7 +1000,9 @@ var Store = (function () {
         var amt = Calc.round2(Calc.nz(p.amount, 0));
         if (amt === 0) return;
         var cat = Calc.findCategory(n, p.catId);
-        var envName = p.envelope || Calc.defaultEnvelope(n, p.catId, { cycle: cycle });
+        var envName = Calc.incomeCategory(p.catId) ? 'income' : (p.envelope || Calc.defaultEnvelope(n, p.catId, { cycle: cycle }));
+        if (envName === 'income' && amt >= 0) throw new Error('收入金额方向不正确');
+        if (envName === 'income' && !Calc.incomeCategory(p.catId)) throw new Error('请选择收入分类');
         var rec = {
           id: uid('e'),
           date: src.date,
@@ -1065,24 +1078,37 @@ var Store = (function () {
       if (live) changeAccount(n, Calc.entryAccount(old), old.amount);
       var cat = Calc.findCategory(n, patch.catId || old.catId);
       old.amount = Calc.round2(Number(patch.amount));
+      if (old.amount === 0) throw new Error('请输入有效金额');
       old.catId = cat.id; old.catName = cat.name; old.cat1 = cat.parent;
-      old.envelope = patch.envelope || old.envelope;
+      if (Calc.incomeCategory(old.catId)) {
+        if (old.amount >= 0) throw new Error('收入金额方向不正确');
+        old.envelope = 'income';
+        if (patch.account) {
+          if (['icbc', 'abc', 'yuebao', 'jiaohang'].indexOf(patch.account) < 0) throw new Error('请选择入账账户');
+          old.account = patch.account;
+        }
+      } else old.envelope = patch.envelope || old.envelope;
       if (typeof patch.note === 'string') old.note = patch.note;
       if (live) changeAccount(n, Calc.entryAccount(old), -old.amount);
       return n;
     });
   }
 
-  function recordPaydayDifference(input) {
-    var s = read(), cycle = Calc.deriveCycle(s), rec = Calc.reconcileTotal(s, input);
+  function paydayDifferenceEntry(s, input) {
+    var cycle = Calc.deriveCycle(s), rec = Calc.reconcileTotal(s, input);
     if (!rec.ready) throw new Error('请填写农行、余额宝和招行总欠款');
-    if (rec.balanced) return { state: s, entry: null };
-    var entry = {
+    if (rec.balanced) return null;
+    return {
       id: uid('e'), date: input.paydayDate || s.today, time: nowHM(),
       amount: Calc.round2(-rec.diff), catId: 'c-pending', catName: '待核对', cat1: '对账',
       envelope: 'pending', account: 'abc', pending: true, cycleKey: cycle.key,
       note: '发薪日对账：农行 − 招行总欠款 + 余额宝，差额待核对'
     };
+  }
+
+  function recordPaydayDifference(input) {
+    var s = read(), entry = paydayDifferenceEntry(s, input);
+    if (!entry) return { state: s, entry: null };
     var next = save(function (st) {
       var n = Calc.clone(st);
       n.entries.push(entry);
@@ -1090,6 +1116,24 @@ var Store = (function () {
       return n;
     });
     return { state: next, entry: entry };
+  }
+
+  // 差额、分配、新周期和工资收入一起保存；失败后保留原账和表单，可安全重试。
+  function finishPayday(input) {
+    var s = read();
+    if (!input || ['salary', 'abcActual', 'yuebaoActual', 'cmbDebt'].some(function (key) {
+      return typeof input[key] !== 'number' || !isFinite(input[key]) || input[key] < 0;
+    }) || input.salary <= 0) throw new Error('请填写有效的工资、余额和欠款');
+    if (s.lastPayday === input.paydayDate) throw new Error('今天已完成发薪日流程');
+    var next = Calc.clone(s), entry = paydayDifferenceEntry(s, input);
+    if (entry) {
+      next.entries.push(entry);
+      changeAccount(next, 'abc', -entry.amount);
+    }
+    next = Calc.applyPayday(next, Calc.paydayPlan(next, input), input);
+    write(next);
+    if (!lastWriteOk()) cache = s;
+    return next;
   }
 
   /** 设置页保存 */
@@ -1148,7 +1192,7 @@ var Store = (function () {
     var deposits = Array.isArray(data.deposits) ? data.deposits : [];
     var goals = Array.isArray(data.goals) ? data.goals : [];
     var acc = data.accounts || {};
-    var totalSpent = entries.reduce(function (a, e) { return a + (Number(e.amount) || 0); }, 0);
+    var totalSpent = entries.reduce(function (a, e) { return a + (e.envelope === 'income' ? 0 : (Number(e.amount) || 0)); }, 0);
     var pendingCount = entries.filter(function (e) { return e.pending; }).length;
     var subs = (data.settings || {}).subscriptions;
     return {
@@ -1169,6 +1213,7 @@ var Store = (function () {
         subscriptionCount: Array.isArray(subs) ? subs.length : 0,
         calendarDays: Object.keys(data.calendar || {}).length,
         totalSpent: Math.round(totalSpent * 100) / 100,
+        totalIncome: Calc.sum(entries, function (e) { return e.envelope === 'income' ? -e.amount : 0; }),
         accounts: {
           yuebao: Number(acc.yuebao) || Number(acc.cangzhe) || 0,
           holiday: Number(acc.holiday) || 0,
@@ -1263,6 +1308,7 @@ var Store = (function () {
     recordDueSubscriptions: recordDueSubscriptions,
     updateEntry: updateEntry,
     recordPaydayDifference: recordPaydayDifference,
+    finishPayday: finishPayday,
     accountBalance: accountBalance,
     canSetOpeningBalances: canSetOpeningBalances,
     setOpeningBalances: setOpeningBalances,

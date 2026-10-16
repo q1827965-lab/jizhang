@@ -29,12 +29,14 @@
 
   function render() {
     var S = Store.state();
-    var cycleKey = Calc.cycleKeyForDate(S, date);
-    var list = Calc.entriesOfCycle(S, cycleKey).filter(function (e) { return e.date === date; });
+    // 同一天可以有上周期支出和新周期工资，按实际日期展示全部收支。
+    var list = (S.entries || []).filter(function (e) { return e.date === date; });
+    list.sort(function (a, b) { return (a.time || '').localeCompare(b.time || ''); });
 
-    var total = Calc.sum(list, function (e) { return e.amount; });
+    var totals = Calc.entryTotals(list);
     var byEnv = {};
     list.forEach(function (e) {
+      if (e.envelope === 'income') return;
       byEnv[e.envelope] = Calc.round2((byEnv[e.envelope] || 0) + e.amount);
     });
     var envNames = { food: '吃饭', sub: '固定订阅', taxi: '机动', other: '机动·其他', free: '自由支配' };
@@ -47,7 +49,7 @@
       var seq = Calc.occurrenceIndex(S, e);
       var counted = e.amount > 0 && (e.catName === '打车（计次）' || e.catName === '外卖（计次）');
       var impact = '';
-      if (e.envelope === 'free') {
+      if (e.envelope === 'free' && e.amount > 0) {
         var im = Calc.impactOfEntry(S, { amount: e.amount, catId: e.catId, envelope: 'free', id: '__none__' });
         impact = im.applies ? ' · 排表最低点 ' + Calc.num(im.minAfter) : '';
       }
@@ -58,9 +60,11 @@
             (e.auto ? ' <span class="tag">自动</span>' : '') +
             (counted ? ' · 第 ' + seq + ' 次' : '') +
             (e.note ? ' · ' + UI.esc(e.note) : '') + '</div>' +
-          '<div class="flow-item__s">' + UI.esc(e.cat1) + ' · 出钱：' + (ENV_LABEL[e.envelope] || e.envelope) + impact + '</div>' +
+          '<div class="flow-item__s">' + (e.amount < 0
+            ? '入账：' + UI.esc(Calc.accountName(Calc.entryAccount(e)))
+            : UI.esc(e.cat1) + ' · 出钱：' + (ENV_LABEL[e.envelope] || e.envelope) + impact) + '</div>' +
         '</div>' +
-        '<div class="flow-item__a">' + UI.signed(e.amount) + '</div>' +
+        '<div class="flow-item__a">' + (e.amount < 0 ? '+' + Calc.num(-e.amount) : UI.signed(e.amount)) + '</div>' +
         '<a class="item-row__edit" href="review-entry.html?id=' + encodeURIComponent(e.id) + '" aria-label="' + (e.pending ? '拆分待核对' : '编辑流水') + '">' + UI.icon('edit', 14) + '</a>' +
         '<button type="button" class="item-row__edit" data-del="' + e.id + '" aria-label="删除">' + UI.icon('close', 14) + '</button>' +
         '</div>';
@@ -79,10 +83,11 @@
 
       '<section class="card">' +
         '<div class="row-between" style="align-items:baseline">' +
-          '<span class="card-label">当日合计</span>' +
-          '<span style="font-size:28px;font-weight:700">' + UI.money(total) + '</span>' +
+          '<span class="card-label">' + (totals.net >= 0 ? '当日净收入' : '当日净支出') + '</span>' +
+          '<span style="font-size:28px;font-weight:700">' + UI.money(Math.abs(totals.net)) + '</span>' +
         '</div>' +
-        (envChips ? '<div class="chips">' + envChips + '</div>' : '<div class="hint">这天还没有记账</div>') +
+        '<div class="row-between"><span>收入 ' + UI.money(totals.income) + '</span><span>支出 ' + UI.money(totals.expense) + '</span></div>' +
+        (envChips ? '<div class="chips">' + envChips + '</div>' : (list.length ? '' : '<div class="hint">这天还没有记账</div>')) +
       '</section>' +
 
       '<section class="card card--flush">' + (rows || '<div class="hint" style="padding:14px 0">没有记录</div>') + '</section>' +
@@ -126,8 +131,10 @@ if (back) {
         render();
         return;
       }
-      if (!confirm('删掉这一笔？账户余额会退回去。')) return;
+      if (!confirm('删掉这一笔？' + ((Store.state().entries || []).some(function (e) { return e.id === id && e.amount < 0; })
+        ? '这笔收入会从入账账户扣回。' : '账户余额会退回去。'))) return;
       Store.removeEntry(id);
+      if (!Store.lastWriteOk()) return;
       render();
       UI.toast('已删除');
     });

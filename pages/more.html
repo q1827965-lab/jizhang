@@ -221,7 +221,7 @@
       var s = r.summary;
       var msg =
         '这个文件里有：\n\n' +
-        '· 流水 ' + s.entryCount + ' 笔（合计 ' + UI.money(s.totalSpent) + '）\n' +
+        '· 流水 ' + s.entryCount + ' 笔（收入 ' + UI.money(s.totalIncome || 0) + '，支出 ' + UI.money(s.totalSpent) + '）\n' +
    '· 排表 ' + s.planCount + ' 项（排定 ' + s.scheduledCount + '、条件 ' + s.conditionalCount + '）\n' +
         '· 已买记录 ' + s.boughtCount + ' 条\n' +
         '· 定期存单 ' + s.depositCount + ' 张、大目标 ' + s.goalCount + ' 个\n' +

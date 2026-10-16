@@ -85,6 +85,28 @@ var Calc = (function () {
     return ACCOUNT_NAMES[key] || key;
   }
 
+  // 收入分类独立于用户已有的支出分类，不迁移或覆盖旧分类。
+  function incomeCategories() {
+    return [
+      { id: 'c-income-salary', name: '工资', defaultEnvelope: 'income' },
+      { id: 'c-income-subsidy', name: '补贴', defaultEnvelope: 'income' },
+      { id: 'c-income-yield', name: '收益', defaultEnvelope: 'income' },
+      { id: 'c-income-other', name: '其他收入', defaultEnvelope: 'income' }
+    ];
+  }
+
+  function incomeCategory(catId) {
+    var cats = incomeCategories();
+    for (var i = 0; i < cats.length; i++) if (cats[i].id === catId) return cats[i];
+    return null;
+  }
+
+  function entryTotals(list) {
+    var income = sum(list, function (e) { return e.amount < 0 ? -e.amount : 0; });
+    var expense = sum(list, function (e) { return e.amount > 0 ? e.amount : 0; });
+    return { income: income, expense: expense, net: round2(income - expense) };
+  }
+
   /**
    * 一笔流水从哪个账户出钱。
    * 普通流水按信封推（自由支配 → 余额宝，其余 → 农行）；
@@ -632,6 +654,8 @@ start: start,
   }
 
   function findCategory(state, catId) {
+    var income = incomeCategory(catId);
+    if (income) return { id: catId, name: income.name, parent: '收入', parentId: 'c-income', node: income };
     var cats = state.categories || [];
     for (var i = 0; i < cats.length; i++) {
       for (var j = 0; j < cats[i].children.length; j++) {
@@ -2286,6 +2310,7 @@ reconcileTotal: rec,
     var byCat = {};
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
+      if (e.envelope === 'income') continue;
       var key = e.cat1 + ' · ' + e.catName;
       if (!byCat[key]) byCat[key] = { name: key, amount: 0, count: 0 };
       byCat[key].amount = round2(byCat[key].amount + nz(e.amount, 0));
@@ -2378,7 +2403,13 @@ var advice = [];
       categories: cats,
       taxiCount: env.taxi.usedCount,
       takeoutCount: env.takeout.usedInQuota,
-      totalSpent: sum(list, function (e) { return e.amount; }),
+      totalSpent: sum(list, function (e) { return e.envelope === 'income' ? 0 : e.amount; }),
+      totalIncome: sum(list, function (e) { return e.envelope === 'income' ? -e.amount : 0; }),
+      incomeCategories: incomeCategories().map(function (cat) {
+        return { id: cat.id, name: cat.name, amount: sum(list, function (e) {
+          return e.envelope === 'income' && e.catId === cat.id ? -e.amount : 0;
+        }) };
+      }),
       bought: bought,
       boughtRecords: blog.filter(function (r) { return r.cycleKey === cycleKey; }),
       deferred: deferred,
@@ -2394,6 +2425,7 @@ var advice = [];
     input = input || {};
     var next = clone(state);
     var paydayDate = input.paydayDate || state.today;
+    if (state.lastPayday === paydayDate && state.lastPaydayFlowAt) return next;
     var cycle = plan.cycle;
     if (isNum(input.yuebaoActual)) next.accounts.yuebao = round2(input.yuebaoActual);
 
@@ -2500,6 +2532,17 @@ var advice = [];
     next.lastPayday = paydayDate;
     // 记下「流程完成的时间点」：发薪日当天的支出以它为界分到上一/新周期（第 12 节）
     next.lastPaydayFlowAt = paydayDate + 'T' + (input.flowTime || nowHMOf(input)) + ':00';
+
+    // 工资已在上面的工行余额计算中加过；这里只补一条收入流水，不再加余额。
+    if (isNum(plan.salary) && plan.salary > 0) {
+      next.entries = next.entries || [];
+      next.entries.push({
+        id: 'income-payday-' + paydayDate, date: paydayDate, time: nowHMOf(input),
+        amount: -round2(plan.salary), catId: 'c-income-salary', catName: '工资', cat1: '收入',
+        envelope: 'income', account: 'icbc', cycleKey: newCycleKey, reviewOnly: false,
+        auto: true, autoPayday: true, note: ''
+      });
+    }
 
     return next;
   }
@@ -2723,6 +2766,7 @@ var advice = [];
     buildReview: buildReview,
     /* 第五轮：账户 / 假期周期 / 订阅自动入账 */
     ACCOUNT_NAMES: ACCOUNT_NAMES, accountName: accountName, entryAccount: entryAccount,
+    incomeCategories: incomeCategories, incomeCategory: incomeCategory, entryTotals: entryTotals,
     envelopeTotal: envelopeTotal, isHolidayCycle: isHolidayCycle, nextHolidayKey: nextHolidayKey,
     holidayGap: holidayGap, dueSubscriptions: dueSubscriptions,
     expectedYuebaoBalance: expectedYuebaoBalance,

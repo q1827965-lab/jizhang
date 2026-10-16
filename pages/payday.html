@@ -123,7 +123,7 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
       '<section class="card">' +
     '<div class="section-title">2 · 上一周期复盘（' + review.cycleLabel + '）</div>' +
         '<div class="mini-list">' + envRows + '</div>' +
-     '<div class="hint">打车 ' + review.taxiCount + ' 次 · 外卖 ' + review.takeoutCount + ' 次 · 合计支出 ' + UI.money(review.totalSpent) + '</div>' +
+     '<div class="hint">打车 ' + review.taxiCount + ' 次 · 外卖 ' + review.takeoutCount + ' 次 · 合计收入 ' + UI.money(review.totalIncome || 0) + ' · 合计支出 ' + UI.money(review.totalSpent) + '</div>' +
    '<div class="hint">本周期买了：' + (review.bought.join('、') || '无（只有实际买掉的才算）') + '</div>' +
       '<div class="hint">推迟了：' + (review.deferred.join('、') || '无') + '</div>' +
         (review.advice.length
@@ -169,7 +169,7 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
 
       '<section class="card">' +
         '<div class="section-title">4 · 完成新周期</div>' +
-      '<div class="hint">全部勾完会：生成定期存单、记下本次发薪日期、各信封额度重置、开始新周期。</div>' +
+      '<div class="hint">全部勾完会：自动记一笔工资收入、生成定期存单、记下本次发薪日期、各信封额度重置、开始新周期。已计入本次实发工资的补贴不要再单独记一次收入。</div>' +
         '<button type="button" class="btn btn--lg btn--block" id="finish"' +
     ((allDone && !salaryMissing && recon.ready && input.cmbDebt != null) ? '' : ' disabled') + '>' +
  (salaryMissing ? '先填实发工资'
@@ -206,12 +206,7 @@ var salaryMissing = (typeof input.salary !== 'number') || input.salary <= 0;
     UI.on(root, '#finish', 'click', function () {
       if (!confirm('完成发薪日流程？各信封额度会重置，开始新周期。')) return;
       try {
-        if ([input.salary, input.abcActual, input.yuebaoActual, input.cmbDebt].some(function (v) { return v == null || !isFinite(v) || v < 0; })) throw new Error('请填写有效的工资、余额和欠款');
-        if (Store.state().lastPayday === input.paydayDate) throw new Error('今天已完成发薪日流程');
-        Store.recordPaydayDifference(input);
-        if (!Store.lastWriteOk()) return;
-        var plan2 = Calc.paydayPlan(Store.state(), input);
-        Store.write(Calc.applyPayday(Store.state(), plan2, input));
+        Store.finishPayday(input);
         if (!Store.lastWriteOk()) return;
         location.href = UI.url('home.html');
       } catch (e) { UI.toast(e.message); }
