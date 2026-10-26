@@ -9,6 +9,7 @@
 
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../vendor/flatpickr/flatpickr.min.css">
 </head>
 <body>
 <div class="phone">
@@ -19,6 +20,8 @@
 <script src="../js/png-data.js"></script>
   <script src="../js/calc.js"></script>
 <script src="../js/store.js"></script>
+<script src="../vendor/flatpickr/flatpickr.min.js"></script>
+<script src="../vendor/flatpickr/zh.js"></script>
 <script src="../js/ui.js"></script>
 <script>
 (function () {
@@ -30,7 +33,7 @@
   var draft = {
     kind: 'expense',
     incomeCatId: 'c-income-subsidy',
-    account: 'icbc',
+    incomeAccount: 'icbc',
     date: UI.qs('date') || S.today,
     amount: UI.qsNum('amount') != null ? UI.qsNum('amount') : '',
     catId: UI.qs('catId') || 'c-food-main',
@@ -104,6 +107,33 @@
     return cat.name;
   }
 
+  function feedbackHtml() {
+    var impact = Calc.impactOfEntry(S, {
+      amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date,
+      cycleKey: draft.cycleKey, id: '__preview__'
+    });
+    var impactHtml = '';
+    if (draft.kind !== 'income' && draft.envelope === 'free' && Number(draft.amount) > 0 && impact.applies) {
+      impactHtml = '<div class="callout callout--warn"><span class="t">记下后的影响</span><span>' + UI.esc(impact.text) + '</span></div>';
+    }
+    var matchHtml = '';
+    if (!match.hidden) {
+      var mc = match.result, hit = mc && mc.hit;
+      var title = hit ? ('这笔是不是排表里的「' + UI.esc(hit.name) + '」？') : '这笔对应排表里的哪一项？';
+      matchHtml = '<div class="callout callout--warn" id="matchBox"><span class="t">' + title + '</span>' +
+        (hit ? '<span>判断依据：' + hit.reason +
+          (hit.nameHit ? '（共同词 ' + hit.runLen + ' 字）' : '（差 ¥' + Calc.num(hit.amountDiff) + '）') + '</span>' : '') +
+        '<div class="chips" style="margin-top:8px">' + mc.candidates.map(function (c) {
+          return '<button type="button" class="chip" data-match-pick="' + UI.esc(c.id) + '" aria-pressed="' +
+            (match.answer === 'yes' && match.removeId === c.id) + '">' + UI.esc(c.name) + '</button>';
+        }).join('') + '<button type="button" class="chip" data-match="no" aria-pressed="' + (match.answer === 'no') + '">不是</button></div>' +
+        '<div class="hint">确认后该项会从排表移除，以实际金额为准。</div></div>';
+    }
+    return matchHtml + impactHtml;
+  }
+
+  function updateFeedback() { body.querySelector('#entryFeedback').innerHTML = feedbackHtml(); }
+
   function render() {
     S = Store.state();
     env = Calc.envelopeState(S, cycle);
@@ -116,7 +146,7 @@
         ? '<div class="hint">完成「发薪日」流程会自动记一笔工资收入并完成资金分配，工资不在这里重复入账。</div>'
         : '<div class="field"><label for="incomeAccount">入账账户</label><select class="input" id="incomeAccount">' +
           ['icbc', 'abc', 'yuebao', 'jiaohang'].map(function (key) {
-            return '<option value="' + key + '"' + (draft.account === key ? ' selected' : '') + '>' + Calc.accountName(key) + '</option>';
+            return '<option value="' + key + '"' + (draft.incomeAccount === key ? ' selected' : '') + '>' + Calc.accountName(key) + '</option>';
           }).join('') + '</select></div>' +
           '<div class="hint">只增加所选账户余额，不增加日常信封额度。自己的账户间转账不要记成收入。</div>' +
           (draft.incomeCatId === 'c-income-yield' ? '<div class="hint">收益平时不逐笔记；每个周期由 AI 核对四个账户和随记流水后，每个账户各记一笔汇总收益。</div>' : ''));
@@ -136,41 +166,11 @@
       }).join('');
     })();
 
-    var ENV_LABEL = { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
-    var envHtml = ['free', 'food', 'other', 'taxi', 'sub'].map(function (k) {
+    var ENV_LABEL = { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配', emergency: '应急金' };
+    var envHtml = ['free', 'food', 'other', 'taxi', 'sub', 'emergency'].map(function (k) {
       return '<button type="button" class="chip" data-env="' + k + '" aria-pressed="' + (draft.envelope === k) + '">' +
         ENV_LABEL[k] + '</button>';
     }).join('');
-
-    /* 记下后的影响：只有出钱信封是自由支配时才显示（规格第 6 节） */
-    var impact = Calc.impactOfEntry(S, {
-      amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date, id: '__preview__'
-    });
-    var impactHtml = '';
-    if (!isIncome && draft.envelope === 'free' && Number(draft.amount) > 0 && impact.applies) {
-      impactHtml = '<div class="callout callout--warn">' +
-        '<span class="t">记下后的影响</span><span>' + UI.esc(impact.text) + '</span></div>';
-    }
-
-    /* 排表匹配检查（第 6 节）：只在自由支配时检查，避免同一笔钱算两次 */
-    var matchHtml = '';
-    if (!match.hidden) {
-      var mc = match.result;
-      var hit = mc && mc.hit;
-      var title = hit ? ('这笔是不是排表里的「' + UI.esc(hit.name) + '」？') : '这笔对应排表里的哪一项？';
-      matchHtml = '<div class="callout callout--warn" id="matchBox">' +
-        '<span class="t">' + title + '</span>' +
-        (hit ? '<span>判断依据：' + hit.reason +
-          (hit.nameHit ? '（共同词 ' + hit.runLen + ' 字）' : '（差 ¥' + Calc.num(hit.amountDiff) + '）') + '</span>' : '<span></span>') +
-        '<div class="chips" style="margin-top:8px">' +
-          (mc.candidates.map(function (c) {
-            return '<button type="button" class="chip" data-match-pick="' + c.id + '">' + UI.esc(c.name) + '</button>';
-          }).join('')) +
-          '<button type="button" class="chip" data-match="no">不是</button>' +
-        '</div>' +
-        '<div class="hint">确认后该项会从排表移除，以实际金额为准。</div>' +
-        '</div>';
-    }
 
     /* 发薪日归属二选一（第 12 节） */
     var attribHtml = '';
@@ -205,8 +205,7 @@
 
       '<div class="row-between">' +
         '<span class="card-label">日期</span>' +
-        '<button type="button" class="btn btn--muted btn--sm" id="pickDate">' + Calc.mdLabel(draft.date) + ' ' + Calc.weekdayCN(draft.date) +
-          UI.icon('down', 14) + '</button>' +
+        UI.datePicker('pickDate', draft.date, { max: Store.today() }) +
       '</div>' +
 
       (isIncome ? incomeHtml : '<div class="stack--sm" style="display:flex;flex-direction:column;gap:8px">' +
@@ -219,6 +218,7 @@
         '<span class="card-label">出钱信封 · 按分类自动填，可改</span>' +
         '<div class="chips">' + envHtml + '</div>' +
         (draft.envelope === 'free' ? '<div class="hint">自由支配的钱从余额宝出，会影响排表预测。</div>' : '') +
+        (draft.envelope === 'emergency' ? '<div class="hint">应急金从交行应急金余额出。</div>' : '') +
       '</div>') +
 
       '<div class="field">' +
@@ -226,9 +226,7 @@
         '<input id="note" class="input" value="' + UI.esc(draft.note) + '" placeholder="' + (isIncome ? '比如 交通补贴、周期收益汇总' : '比如 食堂午饭') + '">' +
       '</div>' +
 
-      matchHtml +
-
-      impactHtml +
+      '<div class="stack" id="entryFeedback">' + feedbackHtml() + '</div>' +
 
       attribHtml +
 
@@ -243,22 +241,11 @@
     UI.on(body, '[data-income-cat]', 'click', function (el) {
       draft.incomeCatId = el.getAttribute('data-income-cat'); render();
     });
-    UI.on(body, '#incomeAccount', 'change', function (el) { draft.account = el.value; });
+    UI.on(body, '#incomeAccount', 'change', function (el) { draft.incomeAccount = el.value; });
     UI.on(body, '#amount', 'input', function (el) {
       draft.amount = el.value === '' ? '' : Number(el.value);
       refreshMatch();
-      if (isIncome) return;
-      var im = Calc.impactOfEntry(S, {
-        amount: draft.amount, catId: draft.catId, envelope: draft.envelope, date: draft.date, id: '__preview__'
-      });
-      var box = body.querySelector('.callout--warn span:last-child');
-      var t = body.querySelector('.callout--warn .t');
-      if (draft.envelope === 'free' && Number(draft.amount) > 0 && im.applies) {
-        if (!t) render();
-        else box.textContent = im.text;
-      } else if (t) {
-        t.parentNode.remove();
-      }
+      updateFeedback();
     });
     UI.on(body, '[data-cat]', 'click', function (el) {
       draft.catId = el.getAttribute('data-cat');
@@ -285,36 +272,24 @@
     UI.on(body, '#note', 'input', function (el) {
       draft.note = el.value;
       refreshMatch();
+      updateFeedback();
     });
     UI.on(body, '[data-match]', 'click', function (el) {
-      if (el.getAttribute('data-match') === 'no') { match.answer = 'no'; match.removeId = ''; render(); return; }
-      match.answer = 'yes'; match.removeId = el.getAttribute('data-match-pick'); render();
+      match.answer = 'no'; match.removeId = ''; updateFeedback();
+    });
+    UI.on(body, '[data-match-pick]', 'click', function (el) {
+      match.answer = 'yes'; match.removeId = el.getAttribute('data-match-pick'); updateFeedback();
     });
     UI.on(body, '[data-cyclekey]', 'click', function (el) {
       draft.cycleKey = el.getAttribute('data-cyclekey');
       render();
     });
-    UI.on(body, '#pickDate', 'click', function () {
-      var inp = document.createElement('input');
-      inp.type = 'date'; inp.value = draft.date;
-      /* 第 6 节：日期不能晚于今天，流水只记已经发生的花费 */
-      inp.max = Store.today();
-      inp.style.cssText = 'position:fixed;left:0;top:0;opacity:0;width:100%;height:100%;z-index:99';
-      inp.onchange = function () {
-        draft.date = inp.value;
-        /* 选了未来的日期就拉回今天 */
-        if (draft.date > Store.today()) {
-          draft.date = Store.today();
-UI.toast('日期不能晚于今天，将来要花的钱放进排表');
-        }
-      /* 换了日期要重算归属默认值与匹配检查 */
-        attrib = Calc.paydayAttribution(S, draft.date, draft.time);
-        draft.cycleKey = attrib.isPayday ? attrib.defaultCycleKey : '';
-        refreshMatch();
-        render();
-      };
-      document.body.appendChild(inp);
-      inp.click();
+    UI.onDateChange(body, '#pickDate', function (value) {
+      draft.date = value;
+      attrib = Calc.paydayAttribution(S, draft.date, draft.time);
+      draft.cycleKey = attrib.isPayday ? attrib.defaultCycleKey : '';
+      refreshMatch();
+      render();
     });
 UI.on(body, '#save', 'click', function () {
       if (isIncome && draft.incomeCatId === 'c-income-salary') { location.href = UI.url('payday.html'); return; }
@@ -323,7 +298,7 @@ UI.on(body, '#save', 'click', function () {
       if (isIncome) {
         if (draft.date > Store.today()) { UI.toast('日期不能晚于今天'); return; }
         try {
-          Store.addEntry({ amount: -amt, catId: draft.incomeCatId, envelope: 'income', account: draft.account,
+          Store.addEntry({ amount: -amt, catId: draft.incomeCatId, envelope: 'income', account: draft.incomeAccount,
             date: draft.date, time: draft.time, cycleKey: draft.cycleKey, note: draft.note });
           if (Store.lastWriteOk()) location.href = UI.url('flow.html') + '?date=' + draft.date;
         } catch (e) { UI.toast(e.message); }

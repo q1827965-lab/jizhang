@@ -9,6 +9,7 @@
 
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../vendor/flatpickr/flatpickr.min.css">
 </head>
 <body>
 <div class="phone">
@@ -18,6 +19,8 @@
 <script src="../js/png-data.js"></script>
   <script src="../js/calc.js"></script>
 <script src="../js/store.js"></script>
+<script src="../vendor/flatpickr/flatpickr.min.js"></script>
+<script src="../vendor/flatpickr/zh.js"></script>
 <script src="../js/ui.js"></script>
 <script>
 (function () {
@@ -39,30 +42,15 @@
       if (e.envelope === 'income') return;
       byEnv[e.envelope] = Calc.round2((byEnv[e.envelope] || 0) + e.amount);
     });
-    var envNames = { food: '吃饭', sub: '固定订阅', taxi: '机动', other: '机动·其他', free: '自由支配' };
+    var envNames = { food: '吃饭', sub: '固定订阅', taxi: '机动', other: '机动·其他', free: '自由支配', emergency: '应急金' };
     var envChips = Object.keys(byEnv).map(function (k) {
       return '<span class="tag">' + (envNames[k] || k) + ' ' + Calc.num(byEnv[k]) + '</span>';
     }).join('');
 
-    var ENV_LABEL = { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
     var rows = list.map(function (e) {
-      var seq = Calc.occurrenceIndex(S, e);
-      var counted = e.amount > 0 && (e.catName === '打车（计次）' || e.catName === '外卖（计次）');
-      var impact = '';
-      if (e.envelope === 'free' && e.amount > 0) {
-        var im = Calc.impactOfEntry(S, { amount: e.amount, catId: e.catId, envelope: 'free', id: '__none__' });
-        impact = im.applies ? ' · 排表最低点 ' + Calc.num(im.minAfter) : '';
-      }
       return '<div class="flow-item">' +
-        '<div class="flow-item__t">' + UI.esc(e.time) + '</div>' +
         '<div class="flow-item__b">' +
-          '<div class="flow-item__n">' + UI.esc(e.catName) +
-            (e.auto ? ' <span class="tag">自动</span>' : '') +
-            (counted ? ' · 第 ' + seq + ' 次' : '') +
-            (e.note ? ' · ' + UI.esc(e.note) : '') + '</div>' +
-          '<div class="flow-item__s">' + (e.amount < 0
-            ? '入账：' + UI.esc(Calc.accountName(Calc.entryAccount(e)))
-            : UI.esc(e.cat1) + ' · 出钱：' + (ENV_LABEL[e.envelope] || e.envelope) + impact) + '</div>' +
+          '<div class="flow-item__n">' + UI.esc(e.catName) + '</div>' +
         '</div>' +
         '<div class="flow-item__a">' + (e.amount < 0 ? '+' + Calc.num(-e.amount) : UI.signed(e.amount)) + '</div>' +
         '<a class="item-row__edit" href="review-entry.html?id=' + encodeURIComponent(e.id) + '" aria-label="' + (e.pending ? '拆分待核对' : '编辑流水') + '">' + UI.icon('edit', 14) + '</a>' +
@@ -70,14 +58,12 @@
         '</div>';
     }).join('');
 
-    var isToday = date === S.today;
     root.innerHTML =
       '<h1 style="margin:0;font-size:24px;font-weight:700">流水</h1>' +
 
       '<div class="date-nav">' +
         '<button type="button" class="icon-btn" data-nav="-1" aria-label="前一天">' + UI.icon('left', 18) + '</button>' +
-        '<button type="button" class="date-nav__mid" id="pickDate">' + Calc.mdLabel(date) + ' ' + Calc.weekdayCN(date) +
-          (isToday ? '<span class="tag" style="font-size:11px">今天</span>' : '') + '</button>' +
+        UI.datePicker('pickDate', date, { className: 'date-nav__mid' }) +
         '<button type="button" class="icon-btn" data-nav="1" aria-label="后一天">' + UI.icon('right', 18) + '</button>' +
       '</div>' +
 
@@ -96,16 +82,7 @@
       '<a class="btn btn--lg btn--block" href="' + UI.url('add.html') + '?date=' + date + '">' +
         UI.icon('plus', 20, '#fff') + '记一笔</a>';
 
-    /* 日期跳转：原生 date 输入 */
-    UI.on(root, '#pickDate', 'click', function () {
-      var inp = document.createElement('input');
-      inp.type = 'date';
-      inp.value = date;
-      inp.style.cssText = 'position:absolute;left:0;top:0;opacity:0;width:100%;height:100%';
-      inp.onchange = function () { date = inp.value; render(); };
-      document.querySelector('.phone').appendChild(inp);
-      inp.click();
-    });
+    UI.onDateChange(root, '#pickDate', function (value) { date = value; render(); });
 
     UI.on(root, '[data-nav]', 'click', function (el) {
       date = Calc.addDays(date, Number(el.getAttribute('data-nav')));

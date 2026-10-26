@@ -194,7 +194,7 @@
  });
     UI.on(root, '#showEm', 'click', function () {
       var cur = Store.state();
- var em = (cur.emergency && cur.emergency.uses) || [];
+ var em = Calc.emergencyPlan(cur).uses;
       var lines = em.map(function (u) { return u.date + '　' + UI.money(u.amount) + '　' + UI.esc(u.reason || ''); });
       alert('应急金动用记录\n\n' + (lines.length ? lines.join('\n') : '还没有动用过'));
     });

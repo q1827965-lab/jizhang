@@ -114,6 +114,7 @@ var Calc = (function () {
    */
   function entryAccount(entry) {
     if (entry && entry.account) return entry.account;
+    if (entry && entry.envelope === 'emergency') return 'jiaohang';
     return (entry && entry.envelope === 'free') ? 'yuebao' : 'abc';
   }
 
@@ -447,6 +448,9 @@ note: rs.length < 3
 /** 某个日期属于哪个周期（用发薪记录切分） */
   function cycleKeyForDate(state, dateStr) {
     var records = (state.paydayRecords || []).slice().sort();
+    if (records.length && dateStr < records[0]) {
+      return monthKey(dateStr) < monthKey(records[0]) ? monthKey(dateStr) : addMonthsKey(monthKey(records[0]), -1);
+    }
     var start = records.length ? records[0] : dateStr;
     for (var i = 0; i < records.length; i++) {
    if (records[i] <= dateStr) start = records[i];
@@ -758,7 +762,7 @@ start: start,
     var foodQuota = nz(env.food, 1050);
     var otherQuota = nz(env.mobilityOther, 400);
 
-    return {
+    var result = {
       cycleKey: cycle.key,
       cycleLabel: cycle.label,
       bufferMode: cycle.bufferMode,
@@ -816,6 +820,14 @@ start: start,
       _used: used,
       _entries: list
     };
+    var reserve = threeEnvelopeLeft(state, result);
+    result.funding = { shortfall: reserve.shortfall, mobilityShortfall: reserve.mobilityShortfall };
+    if (!cycle.bufferMode) {
+      var freeAfterShortfall = round2(freeInAbc - reserve.shortfall);
+      result.free.leftInAbc = Math.max(0, freeAfterShortfall);
+      result.free.balance = round2(yuebao + freeAfterShortfall);
+    }
+    return result;
   }
 
   /** 吃饭今日可花 = 吃饭剩余 ÷ 距预计发薪日天数；缓冲模式改显缓冲剩余 */
@@ -873,19 +885,26 @@ start: start,
 
   /**
    * 吃饭、机动、固定订阅三个信封本周期的剩余额度合计（第 8 节）。
-   * 每项剩余额度小于 0 时按 0 算——即假设这三个信封本周期都会花完。
+   * 已发生支出已在账户扣除；这里只预留尚未花掉的额度和剩余打车次数。
    */
   function threeEnvelopeLeft(state, env) {
     var es = (state && state.settings && state.settings.envelopes) || {};
     var used = (env && env._used) || {};
     var food = Math.max(0, round2(nz(es.food, 1050) - nz(used.food, 0)));
-    // 机动是固定金额信封（825，含打车与其他），不按日历推的晚班数算
-    var mobility = Math.max(0, round2(nz(es.mobility, 825) - nz(used.taxi, 0) - nz(used.other, 0)));
+    // 剩余打车预留不能因其他消费超支而消失，也不重复扣已发生的支出。
+    var mobilityRemaining = round2(nz(es.mobility, 825) - nz(used.taxi, 0) - nz(used.other, 0));
+    var taxiReserve = round2(nz(env && env.taxi && env.taxi.leftCount, 0) * nz(env && env.taxi && env.taxi.price, 25));
+    var mobility = Math.max(0, mobilityRemaining, taxiReserve);
     var sub = Math.max(0, round2(nz(es.sub, 645) - nz(used.sub, 0)));
+    var mobilityShortfall = Math.max(0, round2(taxiReserve - mobilityRemaining));
+    var shortfall = round2(Math.max(0, nz(used.food, 0) - nz(es.food, 1050)) +
+      Math.max(0, nz(used.sub, 0) - nz(es.sub, 645)) + mobilityShortfall);
     return {
       food: round2(food),
       mobility: round2(mobility),
       sub: round2(sub),
+      mobilityShortfall: mobilityShortfall,
+      shortfall: shortfall,
       total: round2(food + mobility + sub)
     };
   }
@@ -909,7 +928,7 @@ start: start,
     if (isNum(opts.paydayAbcBalance)) {
       abcAtPayday = opts.paydayAbcBalance;
     } else {
-      abcAtPayday = round2(nz(state.accounts.abc, 0) - threeEnvelopeLeft(env).total);
+      abcAtPayday = round2(nz(state.accounts.abc, 0) - threeEnvelopeLeft(state, env).total);
     }
     return round2(abcAtPayday - cmbDebt - bufferTarget);
   }
@@ -1474,7 +1493,9 @@ start: start,
 
     // 4 机动·其他：用到 80% / 100%
     var lines = state.settings.warn.mobilityOther || [80, 100];
-    if (env.other.usedPct >= nz(lines[1], 100)) {
+    if (env.funding.mobilityShortfall > 0) {
+      out.push({ type: 'other', level: 'danger', text: '机动含剩余打车预留缺口 ' + money(env.funding.mobilityShortfall) + '，已从自由支配中预留，排表按剩余资金重算' });
+    } else if (env.other.usedPct >= nz(lines[1], 100)) {
       out.push({ type: 'other', level: 'danger', text: '机动·其他已用 100%' });
     } else if (env.other.usedPct >= nz(lines[0], 80)) {
       out.push({ type: 'other', level: 'warn', text: '机动·其他已用 ' + Math.round(env.other.usedPct) + '%' });
@@ -1562,13 +1583,14 @@ start: start,
     return next;
   }
 
-  /** 应用一笔流水到账户（自由支配扣余额宝，其余扣农行；待核对按 account） */
+  /** 应用一笔流水到账户（应急金扣交行，自由支配扣余额宝；显式 account 优先） */
   function applyEntryToAccounts(state, entry) {
     var next = clone(state);
     var amt = nz(entry.amount, 0);
     var acc = entryAccount(entry);
     if (acc === 'yuebao') next.accounts.yuebao = round2(nz(next.accounts.yuebao, 0) - amt);
     else if (acc === 'abc') next.accounts.abc = round2(nz(next.accounts.abc, 0) - amt);
+    else if (acc === 'jiaohang') next.emergency.balance = round2(nz(next.emergency.balance, 0) - amt);
     return next;
   }
 
@@ -1948,9 +1970,19 @@ start: start,
     var target = nz(cfg.target, 10000);
     var perCycle = nz(cfg.perCycle, 500);
     var balance = nz(state.emergency.balance, 0);
-    var uses = (state.emergency.uses || []).slice();
+    // 保留旧的独立动用记录；新应急金流水直接参与统计，不另写一份动用记录。
+    var uses = (state.emergency.uses || []).slice().concat((state.entries || []).filter(function (e) {
+      return e.envelope === 'emergency' && entryAccount(e) === 'jiaohang' && !e.pending;
+    }).map(function (e) {
+      return { id: e.id, date: e.date, amount: e.amount, reason: e.note || e.catName || '应急金支出',
+        entryCycleKey: e.cycleKey || cycleKeyForDate(state, e.date), reviewOnly: !!e.reviewOnly };
+    }));
     var lastPayday = (state.paydayRecords || []).slice().sort().pop() || '';
-    var usedSince = uses.filter(function (u) { return !lastPayday || u.date > lastPayday; });
+    var currentCycleKey = deriveCycle(state).key;
+    var usedSince = uses.filter(function (u) {
+      if (u.entryCycleKey) return !u.reviewOnly && u.entryCycleKey === currentCycleKey;
+      return !lastPayday || u.date > lastPayday;
+    });
     var usedTotal = sum(usedSince, function (u) { return u.amount; });
     var amount = usedSince.length
       ? round2(Math.min(target, balance + usedTotal) - balance)

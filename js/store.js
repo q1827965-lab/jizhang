@@ -315,7 +315,16 @@ var Store = (function () {
     out.lastPaydayFlowAt = s.lastPaydayFlowAt || '';
     out.cycleHistory = s.cycleHistory || [];
     out.lastExportAt = s.lastExportAt || '';
-    out.categories = s.categories && s.categories.length ? s.categories : base.categories;
+    out.categories = Calc.clone(s.categories && s.categories.length ? s.categories : base.categories);
+    out.categories.forEach(function (g) {
+      g.children = g.children.filter(function (c) { return c.id !== 'c-food-grocery'; });
+    });
+    out.entries = Calc.clone(out.entries);
+    out.entries.forEach(function (e) {
+      if (e.catId !== 'c-food-grocery') return;
+      var mealCat = Calc.findCategory(out, 'c-food-main');
+      e.catId = mealCat.id; e.catName = mealCat.name; e.cat1 = mealCat.parent;
+    });
     /* 「今天」**永远**用真实日期，不读存下来的旧值。
        之前是 s.today || today()：第一次打开时 today 被写进 localStorage，
        之后每次读都沿用旧值，周期、倒计时、记账默认日期全部卡在安装那天。
@@ -562,9 +571,9 @@ var Store = (function () {
     var next = Calc.clone(s);
     next.entries = next.entries || [];
     next.entries.push(entry);
-    // 账户同步：待核对按 account，自由支配扣余额宝，其余扣农行。已结束周期的账不动余额。
+    // 账户同步：应急金扣交行，自由支配扣余额宝，显式 account 优先。历史账不动余额。
     if (!entry.reviewOnly) {
-      var acc = draft.account || (entry.envelope === 'free' ? 'yuebao' : 'abc');
+      var acc = Calc.entryAccount(entry);
       changeAccount(next, acc, -entry.amount);
     }
     var saved = write(next);
@@ -586,7 +595,7 @@ var Store = (function () {
         var k = found.cycleKey || Calc.cycleKeyForDate(s, found.date);
         // 同样是已结束周期的账，余额当初就没扣过，删掉也不用还
         if (k === cycle.key && !found.reviewOnly) {
-          var acc = found.account || (found.envelope === 'free' ? 'yuebao' : 'abc');
+          var acc = Calc.entryAccount(found);
           changeAccount(next, acc, found.amount);
         }
       }
@@ -992,7 +1001,7 @@ var Store = (function () {
     var next = save(function (st) {
       var n = Calc.clone(st);
       // 原条删掉，它当时怎么动的余额就怎么退回去
-      var srcAcc = src.account || (src.envelope === 'free' ? 'yuebao' : 'abc');
+      var srcAcc = Calc.entryAccount(src);
       var affectsBalance = !src.reviewOnly && (src.cycleKey || Calc.cycleKeyForDate(st, src.date)) === cycle.key;
       if (affectsBalance) changeAccount(n, srcAcc, Calc.nz(src.amount, 0));
       n.entries = (n.entries || []).filter(function (e) { return e.id !== id; });
@@ -1012,14 +1021,14 @@ var Store = (function () {
           catName: cat.name,
           cat1: cat.parent,
           envelope: envName,
-          account: src.account || undefined,
+          account: srcAcc,
           splitFrom: src.id,
           cycleKey: src.cycleKey || Calc.cycleKeyForDate(st, src.date),
           reviewOnly: !!src.reviewOnly,
           note: p.note || src.note || ''
         };
         // 分片和原条同一个账户出钱；合计和原条相等，退回收支相抵
-        var acc = src.account || (envName === 'free' ? 'yuebao' : 'abc');
+        var acc = Calc.entryAccount(rec);
         if (affectsBalance) changeAccount(n, acc, -amt);
         made.push(rec);
       });
@@ -1070,11 +1079,23 @@ var Store = (function () {
   }
 
   function updateEntry(id, patch) {
-    return save(function (s) {
+    var original = read();
+    var next = (function (s) {
       var n = Calc.clone(s), old = (n.entries || []).filter(function (e) { return e.id === id; })[0];
       if (!old) throw new Error('找不到流水');
       if (!isFinite(Number(patch.amount)) || Number(patch.amount) * old.amount <= 0) throw new Error('请输入有效金额');
-      var live = !old.reviewOnly && (old.cycleKey || Calc.cycleKeyForDate(s, old.date)) === Calc.deriveCycle(s).key;
+      var cycle = Calc.deriveCycle(s);
+      var live = !old.reviewOnly && (old.cycleKey || Calc.cycleKeyForDate(s, old.date)) === cycle.key;
+      var dateChanged = patch.date !== undefined && patch.date !== old.date;
+      if (patch.date !== undefined) {
+        var parsedDate = new Date(patch.date + 'T00:00:00');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(patch.date) || !isFinite(parsedDate.getTime()) ||
+            parsedDate.getFullYear() !== Number(patch.date.slice(0, 4)) ||
+            parsedDate.getMonth() + 1 !== Number(patch.date.slice(5, 7)) ||
+            parsedDate.getDate() !== Number(patch.date.slice(8, 10))) throw new Error('请选择有效日期');
+        if (patch.date > s.today) throw new Error('日期不能晚于今天');
+      }
+      if (dateChanged && (old.pending || old.autoPayday || old.autoSubId)) throw new Error('自动入账和待核对流水需保留原日期');
       if (live) changeAccount(n, Calc.entryAccount(old), old.amount);
       var cat = Calc.findCategory(n, patch.catId || old.catId);
       old.amount = Calc.round2(Number(patch.amount));
@@ -1089,9 +1110,24 @@ var Store = (function () {
         }
       } else old.envelope = patch.envelope || old.envelope;
       if (typeof patch.note === 'string') old.note = patch.note;
-      if (live) changeAccount(n, Calc.entryAccount(old), -old.amount);
+      if (dateChanged || patch.cycleKey !== undefined) {
+        old.date = patch.date || old.date;
+        var attrib = Calc.paydayAttribution(n, old.date, old.time);
+        if (patch.cycleKey && !(attrib.isPayday
+          ? attrib.options.some(function (o) { return o.key === patch.cycleKey; })
+          : patch.cycleKey === Calc.cycleKeyForDate(n, old.date))) throw new Error('请选择有效周期');
+        old.cycleKey = patch.cycleKey || (attrib.isPayday ? attrib.defaultCycleKey : Calc.cycleKeyForDate(n, old.date));
+        old.reviewOnly = old.cycleKey !== cycle.key;
+      }
+      var newLive = !old.reviewOnly && (old.cycleKey || Calc.cycleKeyForDate(n, old.date)) === cycle.key;
+      if (newLive) changeAccount(n, Calc.entryAccount(old), -old.amount);
+      var bought = boughtRecordOf(n, id);
+      if (bought) { bought.date = old.date; bought.cycleKey = old.cycleKey || Calc.cycleKeyForDate(n, old.date); bought.actual = old.amount; }
       return n;
-    });
+    })(original);
+    var saved = write(next);
+    if (!lastWriteOk()) cache = original;
+    return saved;
   }
 
   function paydayDifferenceEntry(s, input) {

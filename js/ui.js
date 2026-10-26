@@ -431,6 +431,61 @@ var UI = (function () {
     });
   }
 
+  function datePicker(id, value, opts) {
+    opts = opts || {};
+    return '<label class="date-picker ' + (opts.className || 'btn btn--muted btn--sm') + '">' +
+      '<span aria-hidden="true">' + Calc.mdLabel(value) + ' ' + Calc.weekdayCN(value) + '</span>' +
+      icon('down', 14) + '<input type="date" class="date-picker__input" id="' + esc(id) +
+      '" aria-label="日期" value="' + esc(value) + '"' + (opts.max ? ' max="' + esc(opts.max) + '"' : '') + '></label>';
+  }
+
+  function onDateChange(root, selector, handler) {
+    var el = root.querySelector(selector);
+    if (typeof flatpickr === 'function' && el) {
+      root.__datePickers = root.__datePickers || {};
+      var prior = root.__datePickers[selector];
+      if (prior && prior.el === el) { prior.handler = handler; return; }
+      if (prior) prior.picker.destroy();
+      var slot = { el: el, handler: handler };
+      root.__datePickers[selector] = slot;
+      slot.picker = flatpickr(el, {
+        locale: 'zh', dateFormat: 'Y-m-d', ariaDateFormat: 'Y年m月d日',
+        defaultDate: el.value, maxDate: el.max || null,
+        disableMobile: true, allowInput: false, positionElement: el.parentNode,
+        onReady: function (dates, value, picker) {
+          el.setAttribute('aria-haspopup', 'dialog');
+          el.setAttribute('aria-expanded', 'false');
+          picker.calendarContainer.setAttribute('role', 'dialog');
+          picker.calendarContainer.setAttribute('aria-label', '选择日期');
+          var actions = document.createElement('div');
+          actions.className = 'date-picker-actions';
+          var cancel = document.createElement('button');
+          cancel.type = 'button'; cancel.className = 'btn btn--muted btn--sm'; cancel.textContent = '取消';
+          cancel.onclick = function () { picker.close(); };
+          actions.appendChild(cancel); picker.calendarContainer.appendChild(actions);
+        },
+        onOpen: function () { el.setAttribute('aria-expanded', 'true'); },
+        onClose: function () { el.setAttribute('aria-expanded', 'false'); },
+        onChange: function (dates, value, picker) {
+          if (!value) return;
+          el.defaultValue = value;
+          picker.close();
+          // 页面会重建输入框；等组件完成本次事件后再销毁旧实例。
+          Promise.resolve().then(function () { if (el.isConnected) slot.handler(value); });
+        }
+      });
+      return;
+    }
+    on(root, selector, 'click', function (el) {
+      if (el.showPicker) { try { el.showPicker(); } catch (e) { /* 原生输入仍可使用 */ } }
+    });
+    on(root, selector, 'change', function (el) {
+      if (!el.value || !el.validity.valid) { el.value = el.defaultValue; return; }
+      el.defaultValue = el.value;
+      handler(el.value);
+    });
+  }
+
   function $(sel, root) {
     return (root || document).querySelector(sel);
   }
@@ -513,6 +568,7 @@ var UI = (function () {
     tile: tile, tag: tag, itemRow: itemRow, barChart: barChart, shortNum: shortNum,
     esc: esc, toast: toast, download: download, exportFilename: exportFilename,
     on: on, $: $, $$: $$, setHTML: setHTML,
+    datePicker: datePicker, onDateChange: onDateChange,
     statusText: statusText, statusClass: statusClass, remindText: remindText,
     /* PWA */
     registerSW: registerSW,

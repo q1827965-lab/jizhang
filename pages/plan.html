@@ -50,13 +50,14 @@
       '</div>' +
 
       '<section class="card">' +
-        '<div class="row-between" style="align-items:flex-end">' +
-          '<div><div class="card-label">自由支配余额</div>' +
-            '<div class="card-value card-value--md">' + UI.money(pv.freeBalance) + '</div></div>' +
-          '<div class="text-right"><div class="section-note">安全可花</div>' +
-            '<div style="font-size:18px;font-weight:700' + (pv.safeSpend <= 0 ? ';color:var(--orange)' : '') + '">' +
-            UI.money(pv.safeSpend) + '</div></div>' +
+        '<div class="plan-balances">' +
+          '<div><div class="card-label">安全可花</div>' +
+            '<div class="card-value card-value--md"' + (pv.safeSpend <= 0 ? ' style="color:var(--orange)"' : '') + '>' + UI.money(pv.safeSpend) + '</div></div>' +
+          '<div class="text-right"><div class="section-note">自由支配余额</div>' +
+            '<div class="card-value" style="font-size:18px;font-weight:700">' +
+            UI.money(pv.freeBalance) + '</div></div>' +
     '</div>' +
+        (pv.env.funding.shortfall > 0 ? '<div class="hint">日常信封及剩余打车预留缺口 ' + UI.money(pv.env.funding.shortfall) + '，已计入自由支配和后续预测。</div>' : '') +
         UI.barChart(fc.rows, fc.floor) +
         '<div class="section-note">攒着（假期周转）余额 ' + UI.money(S.accounts.holiday) + ' · 单独用于假期，不计入安全可花</div>' +
         '<div class="mini-list">' + fc.rows.map(function (r) { return '<div class="mini-list__row"><span>' + r.label + (r.holiday ? ' · 假期' : '') + '</span><span>周转 ' + UI.money(r.holidayBalance) + '</span></div>'; }).join('') + '</div>' +

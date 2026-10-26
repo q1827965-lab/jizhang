@@ -6,7 +6,7 @@
  *
  * 注意：**账目数据不在这里**，数据存在 localStorage，SW 不碰。
  */
-var CACHE = 'ledger-v3-income-20261016';
+var CACHE = 'ledger-v3-calendar-budget-repair-20261026';
 var ASSETS = [
   './',
   './index.html',
@@ -21,6 +21,9 @@ var ASSETS = [
   './js/calc.js',
   './js/store.js',
   './js/ui.js',
+  './vendor/flatpickr/flatpickr.min.js',
+  './vendor/flatpickr/flatpickr.min.css',
+  './vendor/flatpickr/zh.js',
   './pages/home.html',
   './pages/flow.html',
   './pages/plan.html',

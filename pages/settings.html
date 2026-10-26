@@ -74,7 +74,7 @@
     cur[p[p.length - 1]] = v;
   }
 
-  var envNames = { sub: '订阅', food: '吃饭', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
+  var envNames = { sub: '订阅', food: '吃饭', taxi: '机动·打车', other: '机动·其他', free: '自由支配', emergency: '应急金' };
   function subscriptionRow(sub) {
     return '<section class="card subscription-row" data-id="' + UI.esc(sub.id || Store.uid('sub')) + '">' +
       '<div class="field"><label>名称</label><input class="input sub-name" value="' + UI.esc(sub.name || '') + '"></div>' +
@@ -243,7 +243,7 @@ UI.on(root, '#reset', 'click', function () {
   }
 
   function ENV_CN(k) {
-    return { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' }[k] || k;
+    return { food: '吃饭', sub: '固定订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配', emergency: '应急金' }[k] || k;
   }
 
   render();

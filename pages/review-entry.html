@@ -1,13 +1,13 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>核对流水</title><link rel="manifest" href="../manifest.webmanifest"><link rel="stylesheet" href="../css/app.css"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>核对流水</title><link rel="manifest" href="../manifest.webmanifest"><link rel="stylesheet" href="../css/app.css"><link rel="stylesheet" href="../vendor/flatpickr/flatpickr.min.css"></head>
 <body><div class="phone phone--tall"><div class="scroll" id="scroll"></div></div>
-<script src="../js/calc.js"></script><script src="../js/store.js"></script><script src="../js/ui.js"></script>
+<script src="../js/calc.js"></script><script src="../js/store.js"></script><script src="../vendor/flatpickr/flatpickr.min.js"></script><script src="../vendor/flatpickr/zh.js"></script><script src="../js/ui.js"></script>
 <script>
 (function () {
   var root = document.getElementById('scroll'), id = UI.qs('id'), s = Store.state();
   var src = (s.entries || []).filter(function (e) { return e.id === id; })[0];
   var isIncome = src && src.envelope === 'income';
-  var envs = { food: '吃饭', sub: '订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配' };
+  var envs = { food: '吃饭', sub: '订阅', taxi: '机动·打车', other: '机动·其他', free: '自由支配', emergency: '应急金' };
   function options(selected) {
     var groups = isIncome ? [] : s.categories.slice();
     if (isIncome || (src && src.amount < 0)) groups.push({ name: '收入', children: Calc.incomeCategories() });
@@ -26,8 +26,13 @@
   }
   root.innerHTML = '<div class="topbar topbar--center"><a class="icon-btn" href="flow.html" aria-label="返回">' + UI.icon('left', 18) + '</a><h1>' + (src && src.pending ? '拆分待核对' : '编辑流水') + '</h1><span style="width:40px"></span></div>';
   if (!src) { root.insertAdjacentHTML('beforeend', '<div class="hint">找不到这笔流水</div>'); return; }
+  var entryDate = src.date;
+  var entryCycleKey = src.cycleKey || Calc.cycleKeyForDate(s, src.date);
+  var canEditDate = !src.pending && !src.autoPayday && !src.autoSubId;
   root.insertAdjacentHTML('beforeend', '<div class="hint">' + UI.esc(src.date) + ' · ' + UI.esc(Calc.accountName(Calc.entryAccount(src))) + ' · 原金额 ' + UI.money(Math.abs(src.amount)) +
-    (src.pending ? '。每行选分类和信封，合计须等于原金额，日期和出钱账户不变。' : '') + '</div><div id="parts">' + row(Math.abs(src.amount), src.catId, src.envelope === 'pending' ? 'food' : src.envelope, src.note) + '</div>' +
+    (src.pending ? '。每行选分类和信封，合计须等于原金额，日期和出钱账户不变。' : '') + '</div>' +
+    (canEditDate ? '<div class="row-between"><span class="card-label">日期</span>' + UI.datePicker('entryDate', entryDate, { max: Store.today() }) + '</div><div id="entryCycle"></div>' : '') +
+    '<div id="parts">' + row(Math.abs(src.amount), src.catId, src.envelope === 'pending' ? 'food' : src.envelope, src.note) + '</div>' +
     (src.pending ? '<button class="btn btn--outline btn--block" id="addPart">再拆一笔</button>' : '') + '<button class="btn btn--block" id="saveEntry">保存</button>');
   function bindRows() {
     UI.$$('.entry-part', root).forEach(function (section) {
@@ -38,6 +43,24 @@
     });
   }
   bindRows();
+  function renderCycle() {
+    if (!canEditDate) return;
+    var attrib = Calc.paydayAttribution(s, entryDate, src.time);
+    document.getElementById('entryCycle').innerHTML = attrib.isPayday
+      ? '<span class="card-label">这笔属于</span><div class="chips">' + attrib.options.map(function (o) {
+        return '<button type="button" class="chip" data-cyclekey="' + o.key + '" aria-pressed="' + (entryCycleKey === o.key) + '">' + UI.esc(o.label) + '</button>';
+      }).join('') + '</div>' : '';
+  }
+  renderCycle();
+  UI.onDateChange(root, '#entryDate', function (value) {
+    entryDate = value;
+    var attrib = Calc.paydayAttribution(s, entryDate, src.time);
+    entryCycleKey = attrib.isPayday ? attrib.defaultCycleKey : Calc.cycleKeyForDate(s, entryDate);
+    var label = root.querySelector('#entryDate').parentNode.querySelector('span');
+    label.textContent = Calc.mdLabel(entryDate) + ' ' + Calc.weekdayCN(entryDate);
+    renderCycle();
+  });
+  UI.on(root, '[data-cyclekey]', 'click', function (el) { entryCycleKey = el.getAttribute('data-cyclekey'); renderCycle(); });
   UI.on(root, '#addPart', 'click', function () { document.getElementById('parts').insertAdjacentHTML('beforeend', row('', 'c-food-main', 'food', '')); bindRows(); });
   UI.on(root, '#saveEntry', 'click', function () {
     try {
@@ -49,8 +72,15 @@
           account: isIncome ? section.querySelector('.part-account').value : undefined,
           note: section.querySelector('.part-note').value };
       });
-      if (src.pending) Store.splitPendingEntry(id, parts); else Store.updateEntry(id, parts[0]);
-      if (Store.lastWriteOk()) location.href = 'flow.html?date=' + encodeURIComponent(src.date);
+      if (src.pending) Store.splitPendingEntry(id, parts);
+      else {
+        if (canEditDate) {
+          parts[0].date = entryDate;
+          if (entryDate !== src.date || entryCycleKey !== (src.cycleKey || Calc.cycleKeyForDate(s, src.date))) parts[0].cycleKey = entryCycleKey;
+        }
+        Store.updateEntry(id, parts[0]);
+      }
+      if (Store.lastWriteOk()) location.href = 'flow.html?date=' + encodeURIComponent(entryDate);
     } catch (e) { UI.toast(e.message); }
   });
 })();

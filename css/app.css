@@ -70,6 +70,8 @@ a:hover { color: var(--blue-dark); }
 }
 
 .scroll--tight { gap: 12px; }
+.scroll > *, .sheet > * { flex-shrink: 0; }
+.scroll > .spacer { flex: 1 0 0; }
 
 /* ---------- 顶栏 ---------- */
 .topbar {
@@ -475,6 +477,22 @@ select.input { appearance: none; }
   font-size: 15px; font-weight: 700; cursor: pointer;
   display: flex; align-items: center; justify-content: center; gap: 8px;
 }
+.date-picker { position: relative; min-width: 0; }
+.date-picker__input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; cursor: pointer; font-size: 16px;
+}
+.date-picker:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.date-picker > span, .date-picker > svg { pointer-events: none; }
+.plan-balances { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px; }
+.plan-balances .card-value { white-space: nowrap; }
+.plan-balances .text-right { margin-left: auto; }
+.flatpickr-calendar { max-width: calc(100vw - 16px); font-family: inherit; }
+.flatpickr-calendar .flatpickr-innerContainer, .flatpickr-calendar .flatpickr-rContainer,
+.flatpickr-calendar .flatpickr-days, .flatpickr-calendar .dayContainer { max-width: 100%; min-width: 0; }
+.flatpickr-calendar .dayContainer { width: 100%; }
+.date-picker-actions { display: flex; justify-content: flex-end; padding: 8px; border-top: 1px solid var(--line); }
+.flow-item__n { overflow-wrap: anywhere; }
 
 /* ---------- 结论块 ---------- */
 .verdict { background: var(--blue-100); border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
