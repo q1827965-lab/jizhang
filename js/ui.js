@@ -459,10 +459,14 @@ var UI = (function () {
           picker.calendarContainer.setAttribute('aria-label', '选择日期');
           var actions = document.createElement('div');
           actions.className = 'date-picker-actions';
+          var today = document.createElement('button');
+          today.type = 'button'; today.className = 'btn btn--outline btn--sm'; today.textContent = '今天';
+          today.title = '回到今天';
+          today.onclick = function () { picker.setDate(Store.today(), true, 'Y-m-d'); };
           var cancel = document.createElement('button');
           cancel.type = 'button'; cancel.className = 'btn btn--muted btn--sm'; cancel.textContent = '取消';
           cancel.onclick = function () { picker.close(); };
-          actions.appendChild(cancel); picker.calendarContainer.appendChild(actions);
+          actions.appendChild(today); actions.appendChild(cancel); picker.calendarContainer.appendChild(actions);
         },
         onOpen: function () { el.setAttribute('aria-expanded', 'true'); },
         onClose: function () { el.setAttribute('aria-expanded', 'false'); },

@@ -58,6 +58,7 @@ a:hover { color: var(--blue-dark); }
 }
 
 .phone--tall { height: auto; min-height: 844px; overflow: visible; }
+.phone--flow { height: min(844px, 100vh); height: min(844px, 100dvh); }
 
 .scroll {
   flex: 1;
@@ -469,6 +470,7 @@ select.input { appearance: none; }
 .flow-item__n { font-size: 15px; font-weight: 500; }
 .flow-item__s { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
 .flow-item__a { font-size: 16px; font-weight: 700; }
+.flow-add { position: sticky; bottom: 0; z-index: 2; }
 
 .date-nav { display: flex; align-items: center; gap: 8px; }
 .date-nav__mid {
@@ -491,7 +493,7 @@ select.input { appearance: none; }
 .flatpickr-calendar .flatpickr-innerContainer, .flatpickr-calendar .flatpickr-rContainer,
 .flatpickr-calendar .flatpickr-days, .flatpickr-calendar .dayContainer { max-width: 100%; min-width: 0; }
 .flatpickr-calendar .dayContainer { width: 100%; }
-.date-picker-actions { display: flex; justify-content: flex-end; padding: 8px; border-top: 1px solid var(--line); }
+.date-picker-actions { display: flex; justify-content: space-between; padding: 8px; border-top: 1px solid var(--line); }
 .flow-item__n { overflow-wrap: anywhere; }
 
 /* ---------- 结论块 ---------- */

@@ -6,7 +6,7 @@
  *
  * 注意：**账目数据不在这里**，数据存在 localStorage，SW 不碰。
  */
-var CACHE = 'ledger-v3-calendar-budget-repair-20261026';
+var CACHE = 'ledger-v3-today-sticky-20261026';
 var ASSETS = [
   './',
   './index.html',

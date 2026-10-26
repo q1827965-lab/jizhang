@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="../vendor/flatpickr/flatpickr.min.css">
 </head>
 <body>
-<div class="phone">
+<div class="phone phone--flow">
   <div class="scroll" id="scroll"></div>
   <nav class="nav" aria-label="底部导航"></nav>
 </div>
@@ -79,7 +79,7 @@
       '<section class="card card--flush">' + (rows || '<div class="hint" style="padding:14px 0">没有记录</div>') + '</section>' +
 
       '<div class="spacer"></div>' +
-      '<a class="btn btn--lg btn--block" href="' + UI.url('add.html') + '?date=' + date + '">' +
+      '<a class="btn btn--lg btn--block flow-add" id="addEntry" href="' + UI.url('add.html') + '?date=' + date + '">' +
         UI.icon('plus', 20, '#fff') + '记一笔</a>';
 
     UI.onDateChange(root, '#pickDate', function (value) { date = value; render(); });
